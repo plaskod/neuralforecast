@@ -4,11 +4,15 @@
 __all__ = ['AirPassengers', 'AirPassengersDF', 'unique_id', 'ds', 'y', 'AirPassengersPanel', 'snaive', 'airline1_dummy',
            'airline2_dummy', 'AirPassengersStatic', 'generate_series', 'TimeFeature', 'SecondOfMinute', 'MinuteOfHour',
            'HourOfDay', 'DayOfWeek', 'DayOfMonth', 'DayOfYear', 'MonthOfYear', 'WeekOfYear',
-           'time_features_from_frequency_str', 'augment_calendar_df']
+           'time_features_from_frequency_str', 'augment_calendar_df', 'get_indexer_raise_missing',
+           'PredictionIntervals', 'add_conformal_distribution_intervals', 'add_conformal_error_intervals',
+           'get_prediction_interval_method', 'level_to_quantiles', 'quantiles_to_level']
 
 # %% ../nbs/utils.ipynb 3
 import random
 from itertools import chain
+from typing import List, Union, Optional, Tuple
+from utilsforecast.compat import DFType
 
 import numpy as np
 import pandas as pd
@@ -77,7 +81,6 @@ def generate_series(
 
     temporal_df["unique_id"] = temporal_df["unique_id"].astype("category")
     temporal_df["unique_id"] = temporal_df["unique_id"].cat.as_ordered()
-    temporal_df = temporal_df.set_index("unique_id")
 
     if n_static_features > 0:
         static_features = np.random.uniform(
@@ -90,13 +93,12 @@ def generate_series(
         static_df["unique_id"] = np.arange(n_series)
         static_df["unique_id"] = static_df["unique_id"].astype("category")
         static_df["unique_id"] = static_df["unique_id"].cat.as_ordered()
-        static_df = static_df.set_index("unique_id")
 
         return temporal_df, static_df
 
     return temporal_df
 
-# %% ../nbs/utils.ipynb 11
+# %% ../nbs/utils.ipynb 12
 AirPassengers = np.array(
     [
         112.0,
@@ -247,25 +249,27 @@ AirPassengers = np.array(
     dtype=np.float32,
 )
 
-# %% ../nbs/utils.ipynb 12
+# %% ../nbs/utils.ipynb 13
 AirPassengersDF = pd.DataFrame(
     {
         "unique_id": np.ones(len(AirPassengers)),
-        "ds": pd.date_range(start="1949-01-01", periods=len(AirPassengers), freq="M"),
+        "ds": pd.date_range(
+            start="1949-01-01", periods=len(AirPassengers), freq=pd.offsets.MonthEnd()
+        ),
         "y": AirPassengers,
     }
 )
 
-# %% ../nbs/utils.ipynb 18
+# %% ../nbs/utils.ipynb 20
 # Declare Panel Data
 unique_id = np.concatenate(
     [["Airline1"] * len(AirPassengers), ["Airline2"] * len(AirPassengers)]
 )
-ds = np.concatenate(
-    [
-        pd.date_range(start="1949-01-01", periods=len(AirPassengers), freq="M").values,
-        pd.date_range(start="1949-01-01", periods=len(AirPassengers), freq="M").values,
-    ]
+ds = np.tile(
+    pd.date_range(
+        start="1949-01-01", periods=len(AirPassengers), freq=pd.offsets.MonthEnd()
+    ).to_numpy(),
+    2,
 )
 y = np.concatenate([AirPassengers, AirPassengers + 300])
 
@@ -279,8 +283,7 @@ snaive = (
     .reset_index(drop=True)
 )
 AirPassengersPanel["trend"] = range(len(AirPassengersPanel))
-AirPassengersPanel["y_[lag12]"] = snaive
-AirPassengersPanel["y_[lag12]"].fillna(AirPassengersPanel["y"], inplace=True)
+AirPassengersPanel["y_[lag12]"] = snaive.fillna(AirPassengersPanel["y"])
 
 # Declare Static Data
 unique_id = np.array(["Airline1", "Airline2"])
@@ -292,10 +295,7 @@ AirPassengersStatic = pd.DataFrame(
 
 AirPassengersPanel.groupby("unique_id").tail(4)
 
-# %% ../nbs/utils.ipynb 24
-from typing import List
-
-
+# %% ../nbs/utils.ipynb 26
 class TimeFeature:
     def __init__(self):
         pass
@@ -441,3 +441,192 @@ def augment_calendar_df(df, freq="H"):
     ds_data = pd.DataFrame(ds_data, columns=freq_map[freq])
 
     return pd.concat([df, ds_data], axis=1), freq_map[freq]
+
+# %% ../nbs/utils.ipynb 29
+def get_indexer_raise_missing(idx: pd.Index, vals: List[str]) -> List[int]:
+    idxs = idx.get_indexer(vals)
+    missing = [v for i, v in zip(idxs, vals) if i == -1]
+    if missing:
+        raise ValueError(f"The following values are missing from the index: {missing}")
+    return idxs
+
+# %% ../nbs/utils.ipynb 31
+class PredictionIntervals:
+    """Class for storing prediction intervals metadata information."""
+
+    def __init__(
+        self,
+        n_windows: int = 2,
+        method: str = "conformal_distribution",
+    ):
+        """
+        n_windows : int
+            Number of windows to evaluate.
+        method : str, default is conformal_distribution
+            One of the supported methods for the computation of prediction intervals:
+            conformal_error or conformal_distribution
+        """
+        if n_windows < 2:
+            raise ValueError(
+                "You need at least two windows to compute conformal intervals"
+            )
+        allowed_methods = ["conformal_error", "conformal_distribution"]
+        if method not in allowed_methods:
+            raise ValueError(f"method must be one of {allowed_methods}")
+        self.n_windows = n_windows
+        self.method = method
+
+    def __repr__(self):
+        return (
+            f"PredictionIntervals(n_windows={self.n_windows}, method='{self.method}')"
+        )
+
+# %% ../nbs/utils.ipynb 32
+def add_conformal_distribution_intervals(
+    model_fcsts: np.array,
+    cs_df: DFType,
+    model: str,
+    cs_n_windows: int,
+    n_series: int,
+    horizon: int,
+    level: Optional[List[Union[int, float]]] = None,
+    quantiles: Optional[List[float]] = None,
+) -> Tuple[np.array, List[str]]:
+    """
+    Adds conformal intervals to a `fcst_df` based on conformal scores `cs_df`.
+    `level` should be already sorted. This strategy creates forecasts paths
+    based on errors and calculate quantiles using those paths.
+    """
+    assert (
+        level is not None or quantiles is not None
+    ), "Either level or quantiles must be provided"
+
+    if quantiles is None and level is not None:
+        alphas = [100 - lv for lv in level]
+        cuts = [alpha / 200 for alpha in reversed(alphas)]
+        cuts.extend(1 - alpha / 200 for alpha in alphas)
+    elif quantiles is not None:
+        cuts = quantiles
+
+    scores = cs_df[model].to_numpy().reshape(n_series, cs_n_windows, horizon)
+    scores = scores.transpose(1, 0, 2)
+    # restrict scores to horizon
+    scores = scores[:, :, :horizon]
+    mean = model_fcsts.reshape(1, n_series, -1)
+    scores = np.vstack([mean - scores, mean + scores])
+    scores_quantiles = np.quantile(
+        scores,
+        cuts,
+        axis=0,
+    )
+    scores_quantiles = scores_quantiles.reshape(len(cuts), -1).T
+    if quantiles is None and level is not None:
+        lo_cols = [f"{model}-lo-{lv}" for lv in reversed(level)]
+        hi_cols = [f"{model}-hi-{lv}" for lv in level]
+        out_cols = lo_cols + hi_cols
+    elif quantiles is not None:
+        out_cols = [f"{model}-ql{q}" for q in quantiles]
+
+    fcsts_with_intervals = np.hstack([model_fcsts, scores_quantiles])
+
+    return fcsts_with_intervals, out_cols
+
+# %% ../nbs/utils.ipynb 33
+def add_conformal_error_intervals(
+    model_fcsts: np.array,
+    cs_df: DFType,
+    model: str,
+    cs_n_windows: int,
+    n_series: int,
+    horizon: int,
+    level: Optional[List[Union[int, float]]] = None,
+    quantiles: Optional[List[float]] = None,
+) -> Tuple[np.array, List[str]]:
+    """
+    Adds conformal intervals to a `fcst_df` based on conformal scores `cs_df`.
+    `level` should be already sorted. This startegy creates prediction intervals
+    based on the absolute errors.
+    """
+    assert (
+        level is not None or quantiles is not None
+    ), "Either level or quantiles must be provided"
+
+    if quantiles is None and level is not None:
+        alphas = [100 - lv for lv in level]
+        cuts = [alpha / 200 for alpha in reversed(alphas)]
+        cuts.extend(1 - alpha / 200 for alpha in alphas)
+    elif quantiles is not None:
+        cuts = quantiles
+
+    mean = model_fcsts.ravel()
+    scores = cs_df[model].to_numpy().reshape(n_series, cs_n_windows, horizon)
+    scores = scores.transpose(1, 0, 2)
+    # restrict scores to horizon
+    scores = scores[:, :, :horizon]
+    scores_quantiles = np.quantile(
+        scores,
+        cuts,
+        axis=0,
+    )
+    scores_quantiles = scores_quantiles.reshape(len(cuts), -1)
+
+    if quantiles is None and level is not None:
+        lo_cols = [f"{model}-lo-{lv}" for lv in reversed(level)]
+        hi_cols = [f"{model}-hi-{lv}" for lv in level]
+        out_cols = lo_cols + hi_cols
+    else:
+        out_cols = [f"{model}-ql{q}" for q in cuts]
+
+    scores_quantiles_ls = []
+    for i, q in enumerate(cuts):
+        if q < 0.5:
+            scores_quantiles_ls.append(mean - scores_quantiles[::-1][i])
+        elif q > 0.5:
+            scores_quantiles_ls.append(mean + scores_quantiles[i])
+        else:
+            scores_quantiles_ls.append(mean)
+    scores_quantiles = np.vstack(scores_quantiles_ls).T
+
+    fcsts_with_intervals = np.hstack([model_fcsts, scores_quantiles])
+
+    return fcsts_with_intervals, out_cols
+
+# %% ../nbs/utils.ipynb 34
+def get_prediction_interval_method(method: str):
+    available_methods = {
+        "conformal_distribution": add_conformal_distribution_intervals,
+        "conformal_error": add_conformal_error_intervals,
+    }
+    if method not in available_methods.keys():
+        raise ValueError(
+            f"prediction intervals method {method} not supported "
+            f'please choose one of {", ".join(available_methods.keys())}'
+        )
+    return available_methods[method]
+
+# %% ../nbs/utils.ipynb 35
+def level_to_quantiles(level: List[Union[int, float]]) -> List[float]:
+    """
+    Converts a list of levels to a list of quantiles.
+    """
+    level_set = set(level)
+    return sorted(
+        list(
+            set(sum([[(50 - l / 2) / 100, (50 + l / 2) / 100] for l in level_set], []))
+        )
+    )
+
+
+def quantiles_to_level(quantiles: List[float]) -> List[Union[int, float]]:
+    """
+    Converts a list of quantiles to a list of levels.
+    """
+    quantiles_set = set(quantiles)
+    return sorted(
+        set(
+            [
+                int(round(100 - 200 * (q * (q < 0.5) + (1 - q) * (q >= 0.5)), 2))
+                for q in quantiles_set
+            ]
+        )
+    )

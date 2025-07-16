@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..losses.pytorch import MAE
-from ..common._base_windows import BaseWindows
+from ..common._base_model import BaseModel
 
 # %% ../../nbs/models.nhits.ipynb 8
 class _IdentityBasis(nn.Module):
@@ -33,6 +33,7 @@ class _IdentityBasis(nn.Module):
         self.out_features = out_features
 
     def forward(self, theta: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+
         backcast = theta[:, : self.backcast_size]
         knots = theta[:, self.backcast_size :]
 
@@ -51,7 +52,9 @@ class _IdentityBasis(nn.Module):
                 )
             batch_size = len(backcast)
             knots = knots[:, None, :, :]
-            forecast = torch.zeros((len(knots), self.forecast_size)).to(knots.device)
+            forecast = torch.zeros(
+                (len(knots), self.forecast_size), device=knots.device
+            )
             n_batches = int(np.ceil(len(knots) / batch_size))
             for i in range(n_batches):
                 forecast_i = F.interpolate(
@@ -144,6 +147,7 @@ class NHITSBlock(nn.Module):
         hist_exog: torch.Tensor,
         stat_exog: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+
         # Pooling
         # Pool1d needs 3D input, (B,C,L), adding C dimension
         insample_y = insample_y.unsqueeze(1)
@@ -180,7 +184,7 @@ class NHITSBlock(nn.Module):
         return backcast, forecast
 
 # %% ../../nbs/models.nhits.ipynb 10
-class NHITS(BaseWindows):
+class NHITS(BaseModel):
     """NHITS
 
     The Neural Hierarchical Interpolation for Time Series (NHITS), is an MLP-based deep
@@ -191,19 +195,19 @@ class NHITS(BaseWindows):
     **Parameters:**<br>
     `h`: int, Forecast horizon. <br>
     `input_size`: int, autorregresive inputs size, y=[1,2,3,4] input_size=2 -> y_[t-2:t]=[1,2].<br>
-    `stat_exog_list`: str list, static exogenous columns.<br>
-    `hist_exog_list`: str list, historic exogenous columns.<br>
     `futr_exog_list`: str list, future exogenous columns.<br>
+    `hist_exog_list`: str list, historic exogenous columns.<br>
+    `stat_exog_list`: str list, static exogenous columns.<br>
     `exclude_insample_y`: bool=False, the model skips the autoregressive features y[t-input_size:t] if True.<br>
-    `activation`: str, activation from ['ReLU', 'Softplus', 'Tanh', 'SELU', 'LeakyReLU', 'PReLU', 'Sigmoid'].<br>
     `stack_types`: List[str], stacks list in the form N * ['identity'], to be deprecated in favor of `n_stacks`. Note that len(stack_types)=len(n_freq_downsample)=len(n_pool_kernel_size).<br>
     `n_blocks`: List[int], Number of blocks for each stack. Note that len(n_blocks) = len(stack_types).<br>
     `mlp_units`: List[List[int]], Structure of hidden layers for each stack type. Each internal list should contain the number of units of each hidden layer. Note that len(n_hidden) = len(stack_types).<br>
-    `n_freq_downsample`: List[int], list with the stack's coefficients (inverse expressivity ratios). Note that len(stack_types)=len(n_freq_downsample)=len(n_pool_kernel_size).<br>
-    `interpolation_mode`: str='linear', interpolation basis from ['linear', 'nearest', 'cubic'].<br>
     `n_pool_kernel_size`: List[int], list with the size of the windows to take a max/avg over. Note that len(stack_types)=len(n_freq_downsample)=len(n_pool_kernel_size).<br>
+    `n_freq_downsample`: List[int], list with the stack's coefficients (inverse expressivity ratios). Note that len(stack_types)=len(n_freq_downsample)=len(n_pool_kernel_size).<br>
     `pooling_mode`: str, input pooling module from ['MaxPool1d', 'AvgPool1d'].<br>
+    `interpolation_mode`: str='linear', interpolation basis from ['linear', 'nearest', 'cubic'].<br>
     `dropout_prob_theta`: float, Float between (0, 1). Dropout for NHITS basis.<br>
+    `activation`: str, activation from ['ReLU', 'Softplus', 'Tanh', 'SELU', 'LeakyReLU', 'PReLU', 'Sigmoid'].<br>
     `loss`: PyTorch module, instantiated train loss class from [losses collection](https://nixtla.github.io/neuralforecast/losses.pytorch.html).<br>
     `valid_loss`: PyTorch module=`loss`, instantiated valid loss class from [losses collection](https://nixtla.github.io/neuralforecast/losses.pytorch.html).<br>
     `max_steps`: int=1000, maximum number of training steps.<br>
@@ -219,9 +223,13 @@ class NHITS(BaseWindows):
     `step_size`: int=1, step size between each window of temporal data.<br>
     `scaler_type`: str='identity', type of scaler for temporal inputs normalization see [temporal scalers](https://nixtla.github.io/neuralforecast/common.scalers.html).<br>
     `random_seed`: int, random_seed for pytorch initializer and numpy generators.<br>
-    `num_workers_loader`: int=os.cpu_count(), workers to be used by `TimeSeriesDataLoader`.<br>
     `drop_last_loader`: bool=False, if True `TimeSeriesDataLoader` drops last non-full batch.<br>
     `alias`: str, optional,  Custom name of the model.<br>
+    `optimizer`: Subclass of 'torch.optim.Optimizer', optional, user specified optimizer instead of the default choice (Adam).<br>
+    `optimizer_kwargs`: dict, optional, list of parameters used by the user specified `optimizer`.<br>
+    `lr_scheduler`: Subclass of 'torch.optim.lr_scheduler.LRScheduler', optional, user specified lr_scheduler instead of the default choice (StepLR).<br>
+    `lr_scheduler_kwargs`: dict, optional, list of parameters used by the user specified `lr_scheduler`.<br>
+    `dataloader_kwargs`: dict, optional, list of parameters passed into the PyTorch Lightning dataloader by the `TimeSeriesDataLoader`. <br>
     `**trainer_kwargs`: int,  keyword trainer arguments inherited from [PyTorch Lighning's trainer](https://pytorch-lightning.readthedocs.io/en/stable/api/pytorch_lightning.trainer.trainer.Trainer.html?highlight=trainer).<br>
 
     **References:**<br>
@@ -231,7 +239,13 @@ class NHITS(BaseWindows):
     """
 
     # Class attributes
-    SAMPLING_TYPE = "windows"
+    EXOGENOUS_FUTR = True
+    EXOGENOUS_HIST = True
+    EXOGENOUS_STAT = True
+    MULTIVARIATE = False  # If the model produces multivariate forecasts (True) or univariate (False)
+    RECURRENT = (
+        False  # If the model produces forecasts recursively (True) or direct (False)
+    )
 
     def __init__(
         self,
@@ -265,10 +279,16 @@ class NHITS(BaseWindows):
         step_size: int = 1,
         scaler_type: str = "identity",
         random_seed: int = 1,
-        num_workers_loader=0,
         drop_last_loader=False,
+        alias: Optional[str] = None,
+        optimizer=None,
+        optimizer_kwargs=None,
+        lr_scheduler=None,
+        lr_scheduler_kwargs=None,
+        dataloader_kwargs=None,
         **trainer_kwargs,
     ):
+
         # Inherit BaseWindows class
         super(NHITS, self).__init__(
             h=h,
@@ -285,30 +305,31 @@ class NHITS(BaseWindows):
             early_stop_patience_steps=early_stop_patience_steps,
             val_check_steps=val_check_steps,
             batch_size=batch_size,
-            windows_batch_size=windows_batch_size,
             valid_batch_size=valid_batch_size,
+            windows_batch_size=windows_batch_size,
             inference_windows_batch_size=inference_windows_batch_size,
             start_padding_enabled=start_padding_enabled,
             step_size=step_size,
             scaler_type=scaler_type,
-            num_workers_loader=num_workers_loader,
-            drop_last_loader=drop_last_loader,
             random_seed=random_seed,
+            drop_last_loader=drop_last_loader,
+            alias=alias,
+            optimizer=optimizer,
+            optimizer_kwargs=optimizer_kwargs,
+            lr_scheduler=lr_scheduler,
+            lr_scheduler_kwargs=lr_scheduler_kwargs,
+            dataloader_kwargs=dataloader_kwargs,
             **trainer_kwargs,
         )
 
         # Architecture
-        self.futr_input_size = len(self.futr_exog_list)
-        self.hist_input_size = len(self.hist_exog_list)
-        self.stat_input_size = len(self.stat_exog_list)
-
         blocks = self.create_stack(
             h=h,
             input_size=input_size,
             stack_types=stack_types,
-            futr_input_size=self.futr_input_size,
-            hist_input_size=self.hist_input_size,
-            stat_input_size=self.stat_input_size,
+            futr_input_size=self.futr_exog_size,
+            hist_input_size=self.hist_exog_size,
+            stat_input_size=self.stat_exog_size,
             n_blocks=n_blocks,
             mlp_units=mlp_units,
             n_pool_kernel_size=n_pool_kernel_size,
@@ -337,9 +358,11 @@ class NHITS(BaseWindows):
         hist_input_size,
         stat_input_size,
     ):
+
         block_list = []
         for i in range(len(stack_types)):
             for block_id in range(n_blocks[i]):
+
                 assert (
                     stack_types[i] == "identity"
                 ), f"Block type {stack_types[i]} not found!"
@@ -375,9 +398,10 @@ class NHITS(BaseWindows):
         return block_list
 
     def forward(self, windows_batch):
+
         # Parse windows_batch
-        insample_y = windows_batch["insample_y"]
-        insample_mask = windows_batch["insample_mask"]
+        insample_y = windows_batch["insample_y"].squeeze(-1).contiguous()
+        insample_mask = windows_batch["insample_mask"].squeeze(-1).contiguous()
         futr_exog = windows_batch["futr_exog"]
         hist_exog = windows_batch["hist_exog"]
         stat_exog = windows_batch["stat_exog"]
@@ -400,9 +424,6 @@ class NHITS(BaseWindows):
 
             if self.decompose_forecast:
                 block_forecasts.append(block_forecast)
-
-        # Adapting output's domain
-        forecast = self.loss.domain_map(forecast)
 
         if self.decompose_forecast:
             # (n_batch, n_blocks, h, output_size)

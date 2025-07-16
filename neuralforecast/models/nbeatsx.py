@@ -3,7 +3,7 @@
 # %% auto 0
 __all__ = ['NBEATSx']
 
-# %% ../../nbs/models.nbeatsx.ipynb 6
+# %% ../../nbs/models.nbeatsx.ipynb 7
 from typing import Tuple, Optional
 
 import numpy as np
@@ -11,9 +11,9 @@ import torch
 import torch.nn as nn
 
 from ..losses.pytorch import MAE
-from ..common._base_windows import BaseWindows
+from ..common._base_model import BaseModel
 
-# %% ../../nbs/models.nbeatsx.ipynb 8
+# %% ../../nbs/models.nbeatsx.ipynb 9
 class IdentityBasis(nn.Module):
     def __init__(self, backcast_size: int, forecast_size: int, out_features: int = 1):
         super().__init__()
@@ -80,6 +80,27 @@ class TrendBasis(nn.Module):
         return backcast, forecast
 
 
+class ExogenousBasis(nn.Module):
+    # Reference: https://github.com/cchallu/nbeatsx
+    def __init__(self, forecast_size: int):
+        super().__init__()
+        self.forecast_size = forecast_size
+
+    def forward(
+        self, theta: torch.Tensor, futr_exog: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        backcast_basis = futr_exog[:, : -self.forecast_size, :].permute(0, 2, 1)
+        forecast_basis = futr_exog[:, -self.forecast_size :, :].permute(0, 2, 1)
+        cut_point = forecast_basis.shape[1]
+        backcast_theta = theta[:, cut_point:]
+        forecast_theta = theta[:, :cut_point].reshape(len(theta), cut_point, -1)
+
+        backcast = torch.einsum("bp,bpt->bt", backcast_theta, backcast_basis)
+        forecast = torch.einsum("bpq,bpt->btq", forecast_theta, forecast_basis)
+
+        return backcast, forecast
+
+
 class SeasonalityBasis(nn.Module):
     def __init__(
         self,
@@ -140,7 +161,7 @@ class SeasonalityBasis(nn.Module):
         forecast = torch.einsum("bpq,pt->btq", forecast_theta, self.forecast_basis)
         return backcast, forecast
 
-# %% ../../nbs/models.nbeatsx.ipynb 9
+# %% ../../nbs/models.nbeatsx.ipynb 10
 ACTIVATIONS = ["ReLU", "Softplus", "Tanh", "SELU", "LeakyReLU", "PReLU", "Sigmoid"]
 
 
@@ -165,7 +186,9 @@ class NBEATSBlock(nn.Module):
         """ """
         super().__init__()
 
+        self.h = h
         self.dropout_prob = dropout_prob
+        self.input_size = input_size
         self.futr_input_size = futr_input_size
         self.hist_input_size = hist_input_size
         self.stat_input_size = stat_input_size
@@ -226,11 +249,36 @@ class NBEATSBlock(nn.Module):
 
         # Compute local projection weights and projection
         theta = self.layers(insample_y)
-        backcast, forecast = self.basis(theta)
-        return backcast, forecast
 
-# %% ../../nbs/models.nbeatsx.ipynb 10
-class NBEATSx(BaseWindows):
+        if isinstance(self.basis, ExogenousBasis):
+            if self.futr_input_size > 0 and self.stat_input_size > 0:
+                futr_exog = torch.cat(
+                    (
+                        futr_exog,
+                        stat_exog.unsqueeze(1).expand(-1, futr_exog.shape[1], -1),
+                    ),
+                    dim=2,
+                )
+            elif self.futr_input_size > 0:
+                futr_exog = futr_exog
+            elif self.stat_input_size > 0:
+                futr_exog = stat_exog.unsqueeze(1).expand(
+                    -1, self.input_size + self.h, -1
+                )
+            else:
+                raise (
+                    ValueError(
+                        "No stats or future exogenous. ExogenousBlock not supported."
+                    )
+                )
+            backcast, forecast = self.basis(theta, futr_exog)
+            return backcast, forecast
+        else:
+            backcast, forecast = self.basis(theta)
+            return backcast, forecast
+
+# %% ../../nbs/models.nbeatsx.ipynb 11
+class NBEATSx(BaseModel):
     """NBEATSx
 
     The Neural Basis Expansion Analysis with Exogenous variables (NBEATSx) is a simple
@@ -242,13 +290,13 @@ class NBEATSx(BaseWindows):
     **Parameters:**<br>
     `h`: int, Forecast horizon. <br>
     `input_size`: int, autorregresive inputs size, y=[1,2,3,4] input_size=2 -> y_[t-2:t]=[1,2].<br>
-    `stat_exog_list`: str list, static exogenous columns.<br>
-    `hist_exog_list`: str list, historic exogenous columns.<br>
     `futr_exog_list`: str list, future exogenous columns.<br>
+    `hist_exog_list`: str list, historic exogenous columns.<br>
+    `stat_exog_list`: str list, static exogenous columns.<br>
     `exclude_insample_y`: bool=False, the model skips the autoregressive features y[t-input_size:t] if True.<br>
     `n_harmonics`: int, Number of harmonic oscillations in the SeasonalityBasis [cos(i * t/n_harmonics), sin(i * t/n_harmonics)]. Note that it will only be used if 'seasonality' is in `stack_types`.<br>
     `n_polynomials`: int, Number of polynomial terms for TrendBasis [1,t,...,t^n_poly]. Note that it will only be used if 'trend' is in `stack_types`.<br>
-    `stack_types`: List[str], List of stack types. Subset from ['seasonality', 'trend', 'identity'].<br>
+    `stack_types`: List[str], List of stack types. Subset from ['seasonality', 'trend', 'identity', 'exogenous'].<br>
     `n_blocks`: List[int], Number of blocks for each stack. Note that len(n_blocks) = len(stack_types).<br>
     `mlp_units`: List[List[int]], Structure of hidden layers for each stack type. Each internal list should contain the number of units of each hidden layer. Note that len(n_hidden) = len(stack_types).<br>
     `dropout_prob_theta`: float, Float between (0, 1). Dropout for N-BEATS basis.<br>
@@ -268,9 +316,13 @@ class NBEATSx(BaseWindows):
     `step_size`: int=1, step size between each window of temporal data.<br>
     `scaler_type`: str='identity', type of scaler for temporal inputs normalization see [temporal scalers](https://nixtla.github.io/neuralforecast/common.scalers.html).<br>
     `random_seed`: int, random seed initialization for replicability.<br>
-    `num_workers_loader`: int=os.cpu_count(), workers to be used by `TimeSeriesDataLoader`.<br>
     `drop_last_loader`: bool=False, if True `TimeSeriesDataLoader` drops last non-full batch.<br>
     `alias`: str, optional,  Custom name of the model.<br>
+    `optimizer`: Subclass of 'torch.optim.Optimizer', optional, user specified optimizer instead of the default choice (Adam).<br>
+    `optimizer_kwargs`: dict, optional, list of parameters used by the user specified `optimizer`.<br>
+    `lr_scheduler`: Subclass of 'torch.optim.lr_scheduler.LRScheduler', optional, user specified lr_scheduler instead of the default choice (StepLR).<br>
+    `lr_scheduler_kwargs`: dict, optional, list of parameters used by the user specified `lr_scheduler`.<br>
+    `dataloader_kwargs`: dict, optional, list of parameters passed into the PyTorch Lightning dataloader by the `TimeSeriesDataLoader`. <br>
     `**trainer_kwargs`: int,  keyword trainer arguments inherited from [PyTorch Lighning's trainer](https://pytorch-lightning.readthedocs.io/en/stable/api/pytorch_lightning.trainer.trainer.Trainer.html?highlight=trainer).<br>
 
     **References:**<br>
@@ -279,7 +331,13 @@ class NBEATSx(BaseWindows):
     """
 
     # Class attributes
-    SAMPLING_TYPE = "windows"
+    EXOGENOUS_FUTR = True
+    EXOGENOUS_HIST = True
+    EXOGENOUS_STAT = True
+    MULTIVARIATE = False  # If the model produces multivariate forecasts (True) or univariate (False)
+    RECURRENT = (
+        False  # If the model produces forecasts recursively (True) or direct (False)
+    )
 
     def __init__(
         self,
@@ -308,12 +366,17 @@ class NBEATSx(BaseWindows):
         valid_batch_size: Optional[int] = None,
         windows_batch_size: int = 1024,
         inference_windows_batch_size: int = -1,
-        start_padding_enabled=False,
+        start_padding_enabled: bool = False,
         step_size: int = 1,
         scaler_type: str = "identity",
         random_seed: int = 1,
-        num_workers_loader: int = 0,
         drop_last_loader: bool = False,
+        alias: Optional[str] = None,
+        optimizer=None,
+        optimizer_kwargs=None,
+        lr_scheduler=None,
+        lr_scheduler_kwargs=None,
+        dataloader_kwargs=None,
         **trainer_kwargs,
     ):
         # Protect horizon collapsed seasonality and trend NBEATSx-i basis
@@ -344,23 +407,24 @@ class NBEATSx(BaseWindows):
             start_padding_enabled=start_padding_enabled,
             step_size=step_size,
             scaler_type=scaler_type,
-            num_workers_loader=num_workers_loader,
-            drop_last_loader=drop_last_loader,
             random_seed=random_seed,
+            drop_last_loader=drop_last_loader,
+            alias=alias,
+            optimizer=optimizer,
+            optimizer_kwargs=optimizer_kwargs,
+            lr_scheduler=lr_scheduler,
+            lr_scheduler_kwargs=lr_scheduler_kwargs,
+            dataloader_kwargs=dataloader_kwargs,
             **trainer_kwargs,
         )
 
         # Architecture
-        self.futr_input_size = len(self.futr_exog_list)
-        self.hist_input_size = len(self.hist_exog_list)
-        self.stat_input_size = len(self.stat_exog_list)
-
         blocks = self.create_stack(
             h=h,
             input_size=input_size,
-            futr_input_size=self.futr_input_size,
-            hist_input_size=self.hist_input_size,
-            stat_input_size=self.stat_input_size,
+            futr_input_size=self.futr_exog_size,
+            hist_input_size=self.hist_exog_size,
+            stat_input_size=self.stat_exog_size,
             stack_types=stack_types,
             n_blocks=n_blocks,
             mlp_units=mlp_units,
@@ -371,12 +435,6 @@ class NBEATSx(BaseWindows):
             n_harmonics=n_harmonics,
         )
         self.blocks = torch.nn.ModuleList(blocks)
-
-        # Adapter with Loss dependent dimensions
-        if self.loss.outputsize_multiplier > 1:
-            self.out = nn.Linear(
-                in_features=h, out_features=h * self.loss.outputsize_multiplier
-            )
 
     def create_stack(
         self,
@@ -432,6 +490,12 @@ class NBEATSx(BaseWindows):
                             forecast_size=h,
                             out_features=self.loss.outputsize_multiplier,
                         )
+
+                    elif stack_types[i] == "exogenous":
+                        if futr_input_size + stat_input_size > 0:
+                            n_theta = 2 * (futr_input_size + stat_input_size)
+                            basis = ExogenousBasis(forecast_size=h)
+
                     else:
                         raise ValueError(f"Block type {stack_types[i]} not found!")
 
@@ -455,8 +519,8 @@ class NBEATSx(BaseWindows):
 
     def forward(self, windows_batch):
         # Parse windows_batch
-        insample_y = windows_batch["insample_y"]
-        insample_mask = windows_batch["insample_mask"]
+        insample_y = windows_batch["insample_y"].squeeze(-1)
+        insample_mask = windows_batch["insample_mask"].squeeze(-1)
         futr_exog = windows_batch["futr_exog"]
         hist_exog = windows_batch["hist_exog"]
         stat_exog = windows_batch["stat_exog"]
@@ -479,9 +543,6 @@ class NBEATSx(BaseWindows):
 
             if self.decompose_forecast:
                 block_forecasts.append(block_forecast)
-
-        # Adapting output's domain
-        forecast = self.loss.domain_map(forecast)
 
         if self.decompose_forecast:
             # (n_batch, n_blocks, h)

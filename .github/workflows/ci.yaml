@@ -6,52 +6,38 @@ on:
   pull_request:
     branches: [main]
 
-defaults:
-  run:
-    shell: bash -l {0}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  nb-sync:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Clone repo
-        uses: actions/checkout@v2
-
-      - name: Set up python
-        uses: actions/setup-python@v2
-
-      - name: Install nbdev
-        run: pip install nbdev
-
-      - name: Check if all notebooks are cleaned
-        run: |
-          echo "Check we are starting with clean git checkout"
-          if [ -n "$(git status -uno -s)" ]; then echo "git status is not clean"; false; fi
-          echo "Trying to strip out notebooks"
-          nbdev_clean
-          echo "Check that strip out was unnecessary"
-          git status -s # display the status to see which nbs need cleaning up
-          if [ -n "$(git status -uno -s)" ]; then echo -e "!!! Detected unstripped out notebooks\n!!!Remember to run nbdev_install_git_hooks"; false; fi
   run-tests:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        python-version: [3.8, 3.9, '3.10']
+        os: [ubuntu-latest, macos-13, windows-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        exclude:
+          - os: windows-latest
+            python-version: "3.11"
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID_NIXTLA_TMP }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY_NIXTLA_TMP }}
     steps:
       - name: Clone repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up environment
-        uses: mamba-org/provision-with-micromamba@main
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # 5.3.0
         with:
-          extra-specs: python=${{ matrix.python-version }}
-          cache-env: true
-          channel-priority: 'flexible'
-      
+          python-version: ${{ matrix.python-version }}
+
       - name: Install pip requirements
-        run: pip install ./ 
-      
+        run: >
+          pip install uv &&
+          uv pip install --system -i https://download.pytorch.org/whl/cpu "torch>=2.0.0,<=2.6.0" &&
+          uv pip install --system "numpy<2" ".[dev]"
+
       - name: Tests
-        run: nbdev_test --do_print --timing --n_workers 1
+        run: nbdev_test --do_print --timing --n_workers 0 --flags polars

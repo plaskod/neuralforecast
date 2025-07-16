@@ -1,7 +1,10 @@
 __all__ = ['RNN', 'GRU', 'LSTM', 'TCN', 'DeepAR', 'DilatedRNN',
-           'MLP', 'NHITS', 'NBEATS', 'NBEATSx', 'NHITS_TREAT', 'NBEATSx_TREAT',
+           'MLP', 'NHITS', 'NBEATS', 'NBEATSx', 'DLinear', 'NLinear',
            'TFT', 'VanillaTransformer', 'Informer', 'Autoformer', 'PatchTST', 'FEDformer',
-           'StemGNN', 'HINT', 'DLinear']
+           'StemGNN', 'HINT', 'TimesNet', 'TimeLLM', 'TSMixer', 'TSMixerx', 'MLPMultivariate',
+           'iTransformer', 'BiTCN', 'TiDE', 'DeepNPTS', 'SOFTS', 'TimeMixer', 'KAN', 'RMoK',
+           'TimeXer',
+           ]
 
 from .rnn import RNN
 from .gru import GRU
@@ -11,10 +14,10 @@ from .deepar import DeepAR
 from .dilated_rnn import DilatedRNN
 from .mlp import MLP
 from .nhits import NHITS
-from .nhits_treat import NHITS_TREAT
 from .nbeats import NBEATS
 from .nbeatsx import NBEATSx
-from .nbeatsx_treat import NBEATSx_TREAT
+from .dlinear import DLinear
+from .nlinear import NLinear
 from .tft import TFT
 from .stemgnn import StemGNN
 from .vanillatransformer import VanillaTransformer
@@ -23,4 +26,17 @@ from .autoformer import Autoformer
 from .fedformer import FEDformer
 from .patchtst import PatchTST
 from .hint import HINT
-from .dlinear import DLinear
+from .timesnet import TimesNet
+from .timellm import TimeLLM
+from .tsmixer import TSMixer
+from .tsmixerx import TSMixerx
+from .mlpmultivariate import MLPMultivariate
+from .itransformer import iTransformer
+from .bitcn import BiTCN
+from .tide import TiDE
+from .deepnpts import DeepNPTS
+from .softs import SOFTS
+from .timemixer import TimeMixer
+from .kan import KAN
+from .rmok import RMoK
+from .timexer import TimeXer

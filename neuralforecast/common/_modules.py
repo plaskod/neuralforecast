@@ -2,11 +2,13 @@
 
 # %% auto 0
 __all__ = ['ACTIVATIONS', 'MLP', 'Chomp1d', 'CausalConv1d', 'TemporalConvolutionEncoder', 'TransEncoderLayer', 'TransEncoder',
-           'TransDecoderLayer', 'TransDecoder', 'AttentionLayer', 'PositionalEmbedding', 'TokenEmbedding',
-           'TimeFeatureEmbedding', 'DataEmbedding', 'Concentrator']
+           'TransDecoderLayer', 'TransDecoder', 'AttentionLayer', 'TriangularCausalMask', 'FullAttention',
+           'PositionalEmbedding', 'TokenEmbedding', 'TimeFeatureEmbedding', 'FixedEmbedding', 'TemporalEmbedding',
+           'DataEmbedding', 'DataEmbedding_inverted', 'MovingAvg', 'SeriesDecomp', 'RevIN', 'RevINMultivariate']
 
 # %% ../../nbs/common.modules.ipynb 3
 import math
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -316,34 +318,112 @@ class TransDecoder(nn.Module):
 
 # %% ../../nbs/common.modules.ipynb 17
 class AttentionLayer(nn.Module):
-    def __init__(self, attention, hidden_size, n_head, d_keys=None, d_values=None):
+    def __init__(self, attention, hidden_size, n_heads, d_keys=None, d_values=None):
         super(AttentionLayer, self).__init__()
 
-        d_keys = d_keys or (hidden_size // n_head)
-        d_values = d_values or (hidden_size // n_head)
+        d_keys = d_keys or (hidden_size // n_heads)
+        d_values = d_values or (hidden_size // n_heads)
 
         self.inner_attention = attention
-        self.query_projection = nn.Linear(hidden_size, d_keys * n_head)
-        self.key_projection = nn.Linear(hidden_size, d_keys * n_head)
-        self.value_projection = nn.Linear(hidden_size, d_values * n_head)
-        self.out_projection = nn.Linear(d_values * n_head, hidden_size)
-        self.n_head = n_head
+        self.query_projection = nn.Linear(hidden_size, d_keys * n_heads)
+        self.key_projection = nn.Linear(hidden_size, d_keys * n_heads)
+        self.value_projection = nn.Linear(hidden_size, d_values * n_heads)
+        self.out_projection = nn.Linear(d_values * n_heads, hidden_size)
+        self.n_heads = n_heads
 
-    def forward(self, queries, keys, values, attn_mask):
+    def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
         B, L, _ = queries.shape
         _, S, _ = keys.shape
-        H = self.n_head
+        H = self.n_heads
 
         queries = self.query_projection(queries).view(B, L, H, -1)
         keys = self.key_projection(keys).view(B, S, H, -1)
         values = self.value_projection(values).view(B, S, H, -1)
 
-        out, attn = self.inner_attention(queries, keys, values, attn_mask)
+        out, attn = self.inner_attention(
+            queries=queries,
+            keys=keys,
+            values=values,
+            attn_mask=attn_mask,
+            tau=tau,
+            delta=delta,
+        )
         out = out.view(B, L, -1)
 
         return self.out_projection(out), attn
 
 # %% ../../nbs/common.modules.ipynb 18
+class TriangularCausalMask:
+    """
+    TriangularCausalMask
+    """
+
+    def __init__(self, B, L, device="cpu"):
+        mask_shape = [B, 1, L, L]
+        with torch.no_grad():
+            self._mask = torch.triu(
+                torch.ones(mask_shape, dtype=torch.bool), diagonal=1
+            ).to(device)
+
+    @property
+    def mask(self):
+        return self._mask
+
+
+class FullAttention(nn.Module):
+    def __init__(
+        self,
+        mask_flag=True,
+        factor=5,
+        scale=None,
+        attention_dropout=0.1,
+        output_attention=False,
+    ):
+        super(FullAttention, self).__init__()
+        self.scale = scale
+        self.mask_flag = mask_flag
+        self.output_attention = output_attention
+        self.dropout = nn.Dropout(attention_dropout)
+
+    def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
+        B, L, H, E = queries.shape
+        _, S, _, D = values.shape
+
+        if not self.output_attention:  # flash attention not supported
+            q = queries.permute(0, 2, 1, 3)  # [B, H, L, E]
+            k = keys.permute(0, 2, 1, 3)
+            v = values.permute(0, 2, 1, 3)
+
+            scale = self.scale or 1.0 / math.sqrt(E)
+            attn_output = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=(
+                    attn_mask.mask[:, 0] if (self.mask_flag and attn_mask) else None
+                ),
+                dropout_p=self.dropout.p if self.training else 0.0,
+                scale=scale,
+            )
+            V = attn_output.permute(0, 2, 1, 3).contiguous()
+            return (V, None) if self.output_attention else (V, None)
+        else:
+            scale = self.scale or 1.0 / math.sqrt(E)
+            scores = torch.einsum("blhe,bshe->bhls", queries, keys)
+
+            if self.mask_flag:
+                if attn_mask is None:
+                    attn_mask = TriangularCausalMask(B, L, device=queries.device)
+                scores.masked_fill_(attn_mask.mask, -np.inf)
+
+            A = self.dropout(torch.softmax(scale * scores, dim=-1))
+            V = torch.einsum("bhls,bshd->blhd", A, values)
+
+            return (
+                (V.contiguous(), A) if self.output_attention else (V.contiguous(), None)
+            )
+
+# %% ../../nbs/common.modules.ipynb 19
 class PositionalEmbedding(nn.Module):
     def __init__(self, hidden_size, max_len=5000):
         super(PositionalEmbedding, self).__init__()
@@ -398,6 +478,57 @@ class TimeFeatureEmbedding(nn.Module):
         return self.embed(x)
 
 
+class FixedEmbedding(nn.Module):
+    def __init__(self, c_in, d_model):
+        super(FixedEmbedding, self).__init__()
+
+        w = torch.zeros(c_in, d_model, dtype=torch.float32, requires_grad=False)
+        position = torch.arange(0, c_in, dtype=torch.float32).unsqueeze(1)
+        div_term = (
+            torch.arange(0, d_model, 2).float() * -(math.log(10000.0) / d_model)
+        ).exp()
+
+        w[:, 0::2] = torch.sin(position * div_term)
+        w[:, 1::2] = torch.cos(position * div_term)
+
+        self.emb = nn.Embedding(c_in, d_model)
+        self.emb.weight = nn.Parameter(w, requires_grad=False)
+
+    def forward(self, x):
+        return self.emb(x).detach()
+
+
+class TemporalEmbedding(nn.Module):
+    def __init__(self, d_model, embed_type="fixed", freq="h"):
+        super(TemporalEmbedding, self).__init__()
+
+        minute_size = 4
+        hour_size = 24
+        weekday_size = 7
+        day_size = 32
+        month_size = 13
+
+        Embed = FixedEmbedding if embed_type == "fixed" else nn.Embedding
+        if freq == "t":
+            self.minute_embed = Embed(minute_size, d_model)
+        self.hour_embed = Embed(hour_size, d_model)
+        self.weekday_embed = Embed(weekday_size, d_model)
+        self.day_embed = Embed(day_size, d_model)
+        self.month_embed = Embed(month_size, d_model)
+
+    def forward(self, x):
+        x = x.long()
+        minute_x = (
+            self.minute_embed(x[:, :, 4]) if hasattr(self, "minute_embed") else 0.0
+        )
+        hour_x = self.hour_embed(x[:, :, 3])
+        weekday_x = self.weekday_embed(x[:, :, 2])
+        day_x = self.day_embed(x[:, :, 1])
+        month_x = self.month_embed(x[:, :, 0])
+
+        return hour_x + weekday_x + day_x + month_x + minute_x
+
+
 class DataEmbedding(nn.Module):
     def __init__(
         self, c_in, exog_input_size, hidden_size, pos_embedding=True, dropout=0.1
@@ -421,6 +552,7 @@ class DataEmbedding(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, x, x_mark=None):
+
         # Convolution
         x = self.value_embedding(x)
 
@@ -434,119 +566,202 @@ class DataEmbedding(nn.Module):
 
         return self.dropout(x)
 
+
+class DataEmbedding_inverted(nn.Module):
+    """
+    DataEmbedding_inverted
+    """
+
+    def __init__(self, c_in, hidden_size, dropout=0.1):
+        super(DataEmbedding_inverted, self).__init__()
+        self.value_embedding = nn.Linear(c_in, hidden_size)
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(self, x, x_mark):
+        x = x.permute(0, 2, 1)
+        # x: [Batch Variate Time]
+        if x_mark is None:
+            x = self.value_embedding(x)
+        else:
+            # the potential to take covariates (e.g. timestamps) as tokens
+            x = self.value_embedding(torch.cat([x, x_mark.permute(0, 2, 1)], 1))
+        # x: [Batch Variate hidden_size]
+        return self.dropout(x)
+
 # %% ../../nbs/common.modules.ipynb 20
-class Concentrator(nn.Module):
+class MovingAvg(nn.Module):
+    """
+    Moving average block to highlight the trend of time series
+    """
+
+    def __init__(self, kernel_size, stride):
+        super(MovingAvg, self).__init__()
+        self.kernel_size = kernel_size
+        self.avg = nn.AvgPool1d(kernel_size=kernel_size, stride=stride, padding=0)
+
+    def forward(self, x):
+        # padding on the both ends of time series
+        front = x[:, 0:1, :].repeat(1, (self.kernel_size - 1) // 2, 1)
+        end = x[:, -1:, :].repeat(1, (self.kernel_size - 1) // 2, 1)
+        x = torch.cat([front, x, end], dim=1)
+        x = self.avg(x.permute(0, 2, 1))
+        x = x.permute(0, 2, 1)
+        return x
+
+
+class SeriesDecomp(nn.Module):
+    """
+    Series decomposition block
+    """
+
+    def __init__(self, kernel_size):
+        super(SeriesDecomp, self).__init__()
+        self.MovingAvg = MovingAvg(kernel_size, stride=1)
+
+    def forward(self, x):
+        moving_mean = self.MovingAvg(x)
+        res = x - moving_mean
+        return res, moving_mean
+
+# %% ../../nbs/common.modules.ipynb 21
+class RevIN(nn.Module):
+    """RevIN (Reversible-Instance-Normalization)"""
+
     def __init__(
         self,
-        n_series: int,
-        type: str,
-        init_ka1: float,
-        init_ka2: float,
-        init_ka3: float,
-        input_size: int,
-        h: int,
-        freq: int,
-        mask_future: bool,
+        num_features: int,
+        eps=1e-5,
+        affine=False,
+        subtract_last=False,
+        non_norm=False,
+    ):
+        """
+        :param num_features: the number of features or channels
+        :param eps: a value added for numerical stability
+        :param affine: if True, RevIN has learnable affine parameters
+        :param substract_last: if True, the substraction is based on the last value
+                               instead of the mean in normalization
+        :param non_norm: if True, no normalization performed.
+        """
+        super(RevIN, self).__init__()
+        self.num_features = num_features
+        self.eps = eps
+        self.affine = affine
+        self.subtract_last = subtract_last
+        self.non_norm = non_norm
+        if self.affine:
+            self._init_params()
+
+    def forward(self, x, mode: str):
+        if mode == "norm":
+            self._get_statistics(x)
+            x = self._normalize(x)
+        elif mode == "denorm":
+            x = self._denormalize(x)
+        else:
+            raise NotImplementedError
+        return x
+
+    def _init_params(self):
+        # initialize RevIN params: (C,)
+        self.affine_weight = nn.Parameter(torch.ones(self.num_features))
+        self.affine_bias = nn.Parameter(torch.zeros(self.num_features))
+
+    def _get_statistics(self, x):
+        dim2reduce = tuple(range(1, x.ndim - 1))
+        if self.subtract_last:
+            self.last = x[:, -1, :].unsqueeze(1)
+        else:
+            self.mean = torch.mean(x, dim=dim2reduce, keepdim=True).detach()
+        self.stdev = torch.sqrt(
+            torch.var(x, dim=dim2reduce, keepdim=True, unbiased=False) + self.eps
+        ).detach()
+
+    def _normalize(self, x):
+        if self.non_norm:
+            return x
+        if self.subtract_last:
+            x = x - self.last
+        else:
+            x = x - self.mean
+        x = x / self.stdev
+        if self.affine:
+            x = x * self.affine_weight
+            x = x + self.affine_bias
+        return x
+
+    def _denormalize(self, x):
+        if self.non_norm:
+            return x
+        if self.affine:
+            x = x - self.affine_bias
+            x = x / (self.affine_weight + self.eps * self.eps)
+        x = x * self.stdev
+        if self.subtract_last:
+            x = x + self.last
+        else:
+            x = x + self.mean
+        return x
+
+# %% ../../nbs/common.modules.ipynb 22
+class RevINMultivariate(nn.Module):
+    """
+    ReversibleInstanceNorm1d for Multivariate models
+    """
+
+    def __init__(
+        self,
+        num_features: int,
+        eps=1e-5,
+        affine=False,
+        subtract_last=False,
+        non_norm=False,
     ):
         super().__init__()
+        self.num_features = num_features
+        self.eps = eps
+        self.affine = affine
+        if self.affine:
+            self._init_params()
 
-        assert type in [
-            "log_normal",
-            "sum_total",
-        ], "treatment type not available."
+    def forward(self, x, mode: str):
+        if mode == "norm":
+            x = self._normalize(x)
+        elif mode == "denorm":
+            x = self._denormalize(x)
+        else:
+            raise NotImplementedError
+        return x
 
-        self.n_series = n_series
-        self.type = type
-        self.freq = freq
-        self.mask_future = mask_future
+    def _init_params(self):
+        # initialize RevIN params: (C,)
+        self.affine_weight = nn.Parameter(torch.ones((1, 1, self.num_features)))
+        self.affine_bias = nn.Parameter(torch.zeros((1, 1, self.num_features)))
 
-        # K parameter for each time-series
-        self.k_a1 = nn.Embedding(self.n_series, 1)
-        self.k_a2 = nn.Embedding(self.n_series, 1)
-        self.k_a3 = nn.Embedding(self.n_series, 1)
+    def _normalize(self, x):
+        # Batch statistics
+        self.batch_mean = torch.mean(x, axis=1, keepdim=True).detach()
+        self.batch_std = torch.sqrt(
+            torch.var(x, axis=1, keepdim=True, unbiased=False) + self.eps
+        ).detach()
 
-        # Initialize k_a
-        init_k1 = torch.ones((self.n_series, 1)) * init_ka1
-        init_k2 = torch.ones((self.n_series, 1)) * init_ka2
-        init_k3 = torch.ones((self.n_series, 1)) * init_ka3
+        # Instance normalization
+        x = x - self.batch_mean
+        x = x / self.batch_std
 
-        self.k_a1.weight.data.copy_(init_k1)
-        self.k_a2.weight.data.copy_(init_k2)
-        self.k_a3.weight.data.copy_(init_k3)
+        if self.affine:
+            x = x * self.affine_weight
+            x = x + self.affine_bias
 
-        self.input_size = input_size
-        self.h = h
+        return x
 
-    def lognormal_treatment_concentration(self, t, k_a, sigma=1):
-        t = torch.div(
-            t, 60
-        )  # 60 minutes --> hours # TODO: make more adaptable to different data freq
+    def _denormalize(self, x):
+        # Reverse the normalization
+        if self.affine:
+            x = x - self.affine_bias
+            x = x / self.affine_weight
 
-        conc = torch.exp(
-            torch.negative(torch.pow((torch.log(t + 1e-5) - 1), 2)) / (2 * k_a**2)
-        ) / (t * k_a * torch.sqrt(torch.tensor(2) * torch.pi) + 1e-5)
+        x = x * self.batch_std
+        x = x + self.batch_mean
 
-        return conc
-
-    def sum_total(self, treatment_exog, treatment_var, idx):
-        b = treatment_var.shape[0]
-        l = treatment_var.shape[1]
-
-        # Create [B,L,L] matrix
-        ltr = torch.ones(l, l).triu()
-        ltr_batch = torch.zeros((b, l, l)).to(treatment_exog.device)
-        ltr_batch[:] = ltr
-
-        # Forward fill data
-        ltr_fill = torch.mul(ltr_batch, treatment_var.reshape(b, l, 1))
-        treatment = ltr_fill.nansum(dim=1)  # [B, L]
-
-        return treatment
-
-    def log_normal(self, treatment_exog, treatment_var, k_a_h, idx):
-        b = treatment_var.shape[0]
-        l = treatment_var.shape[1]
-
-        idx = idx.long()
-        k_a = k_a_h(idx)  # [B, 1, 1] for static k_a
-
-        # Create [B,L,L] matrix
-        lt = torch.tensor(range(l))
-        ltr = lt.repeat((l, 1)) - lt.reshape(-1, 1)
-        ltr[ltr < 0] = 0
-
-        ltr_batch = torch.zeros((b, l, l)).to(treatment_exog.device)
-        ltr_batch[:] = ltr
-
-        # Apply frequency
-        ltrf_batch = ltr_batch * self.freq
-
-        # Multiple concentration by treatement_var (dose)
-        conc = self.lognormal_treatment_concentration(ltrf_batch, k_a)
-        scaled_conc = conc * (treatment_var.reshape(b, l, 1))
-        treatment = scaled_conc.nansum(dim=1)  # [B, L]
-
-        return treatment
-
-    def forward(self, treatment_exog: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
-        treatment_var1 = treatment_exog[:, :, -1]  # [B,L,C] -> [B,L]
-        treatment_var2 = treatment_exog[:, :, -2]  # [B,L,C] -> [B,L]
-        treatment_var3 = treatment_exog[:, :, -3]  # [B,L,C] -> [B,L]
-
-        if self.type == "sum_total":
-            treatment1 = self.sum_total(treatment_exog, treatment_var1, idx)
-            treatment2 = self.sum_total(treatment_exog, treatment_var2, idx)
-            treatment3 = self.sum_total(treatment_exog, treatment_var3, idx)
-
-        elif self.type == "log_normal":
-            treatment1 = self.log_normal(treatment_exog, treatment_var1, self.k_a1, idx)
-            treatment2 = self.log_normal(treatment_exog, treatment_var2, self.k_a2, idx)
-            treatment3 = self.log_normal(treatment_exog, treatment_var3, self.k_a3, idx)
-
-        # Replace treatment variable with concentration
-        treatment_exog_out = torch.zeros(treatment_exog.shape).to(treatment_exog.device)
-        treatment_exog_out[:, :, -3] += treatment3
-        treatment_exog_out[:, :, -2] += treatment2
-        treatment_exog_out[:, :, -1] += treatment1
-
-        return treatment_exog_out
+        return x

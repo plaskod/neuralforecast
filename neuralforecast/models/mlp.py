@@ -10,11 +10,10 @@ import torch
 import torch.nn as nn
 
 from ..losses.pytorch import MAE
-from ..common._base_windows import BaseWindows
-from ..common._modules import Concentrator
+from ..common._base_model import BaseModel
 
 # %% ../../nbs/models.mlp.ipynb 6
-class MLP(BaseWindows):
+class MLP(BaseModel):
     """MLP
 
     Simple Multi Layer Perceptron architecture (MLP).
@@ -29,7 +28,8 @@ class MLP(BaseWindows):
     `stat_exog_list`: str list, static exogenous columns.<br>
     `hist_exog_list`: str list, historic exogenous columns.<br>
     `futr_exog_list`: str list, future exogenous columns.<br>
-    `n_layers`: int, number of layers for the MLP.<br>
+    `exclude_insample_y`: bool=False, the model skips the autoregressive features y[t-input_size:t] if True.<br>
+    `num_layers`: int, number of layers for the MLP.<br>
     `hidden_size`: int, number of units for each layer of the MLP.<br>
     `loss`: PyTorch module, instantiated train loss class from [losses collection](https://nixtla.github.io/neuralforecast/losses.pytorch.html).<br>
     `valid_loss`: PyTorch module=`loss`, instantiated valid loss class from [losses collection](https://nixtla.github.io/neuralforecast/losses.pytorch.html).<br>
@@ -38,26 +38,41 @@ class MLP(BaseWindows):
     `num_lr_decays`: int=-1, Number of learning rate decays, evenly distributed across max_steps.<br>
     `early_stop_patience_steps`: int=-1, Number of validation iterations before early stopping.<br>
     `val_check_steps`: int=100, Number of training steps between every validation loss check.<br>
-    `batch_size`: int=32, number of differentseries in each batch.<br>
-    `valid_batch_size`: int=None, number of different series in each validation and test batch.<br>
-    `windows_batch_size`: int=None, windows sampled from rolled data, if None uses all.<br>
+    `batch_size`: int=32, number of different series in each batch.<br>
+    `valid_batch_size`: int=None, number of different series in each validation and test batch, if None uses batch_size.<br>
+    `windows_batch_size`: int=1024, number of windows to sample in each training batch, default uses all.<br>
+    `inference_windows_batch_size`: int=-1, number of windows to sample in each inference batch, -1 uses all.<br>
+    `start_padding_enabled`: bool=False, if True, the model will pad the time series with zeros at the beginning, by input size.<br>
     `step_size`: int=1, step size between each window of temporal data.<br>
     `scaler_type`: str='identity', type of scaler for temporal inputs normalization see [temporal scalers](https://nixtla.github.io/neuralforecast/common.scalers.html).<br>
     `random_seed`: int=1, random_seed for pytorch initializer and numpy generators.<br>
-    `num_workers_loader`: int=os.cpu_count(), workers to be used by `TimeSeriesDataLoader`.<br>
     `drop_last_loader`: bool=False, if True `TimeSeriesDataLoader` drops last non-full batch.<br>
+    `alias`: str, optional,  Custom name of the model.<br>
+    `optimizer`: Subclass of 'torch.optim.Optimizer', optional, user specified optimizer instead of the default choice (Adam).<br>
+    `optimizer_kwargs`: dict, optional, list of parameters used by the user specified `optimizer`.<br>
+    `lr_scheduler`: Subclass of 'torch.optim.lr_scheduler.LRScheduler', optional, user specified lr_scheduler instead of the default choice (StepLR).<br>
+    `lr_scheduler_kwargs`: dict, optional, list of parameters used by the user specified `lr_scheduler`.<br>
+    `dataloader_kwargs`: dict, optional, list of parameters passed into the PyTorch Lightning dataloader by the `TimeSeriesDataLoader`. <br>
     `**trainer_kwargs`: int,  keyword trainer arguments inherited from [PyTorch Lighning's trainer](https://pytorch-lightning.readthedocs.io/en/stable/api/pytorch_lightning.trainer.trainer.Trainer.html?highlight=trainer).<br>
     """
 
-    SAMPLING_TYPE = "windows"
+    # Class attributes
+    EXOGENOUS_FUTR = True
+    EXOGENOUS_HIST = True
+    EXOGENOUS_STAT = True
+    MULTIVARIATE = False  # If the model produces multivariate forecasts (True) or univariate (False)
+    RECURRENT = (
+        False  # If the model produces forecasts recursively (True) or direct (False)
+    )
 
     def __init__(
         self,
         h,
         input_size,
-        futr_exog_list=None,
-        hist_exog_list=None,
         stat_exog_list=None,
+        hist_exog_list=None,
+        futr_exog_list=None,
+        exclude_insample_y=False,
         num_layers=2,
         hidden_size=1024,
         loss=MAE(),
@@ -75,26 +90,24 @@ class MLP(BaseWindows):
         step_size: int = 1,
         scaler_type: str = "identity",
         random_seed: int = 1,
-        num_workers_loader: int = 0,
         drop_last_loader: bool = False,
-        # New parameters
-        use_concentrator: bool = False,
-        concentrator_type: str = None,
-        n_series: int = 1,
-        init_ka1: float = 1.5,
-        init_ka2: float = 1.5,
-        init_ka3: float = 1.5,
-        freq: int = 1,
-        **trainer_kwargs,
+        alias: Optional[str] = None,
+        optimizer=None,
+        optimizer_kwargs=None,
+        lr_scheduler=None,
+        lr_scheduler_kwargs=None,
+        dataloader_kwargs=None,
+        **trainer_kwargs
     ):
 
         # Inherit BaseWindows class
         super(MLP, self).__init__(
             h=h,
             input_size=input_size,
-            futr_exog_list=futr_exog_list,
-            hist_exog_list=hist_exog_list,
             stat_exog_list=stat_exog_list,
+            hist_exog_list=hist_exog_list,
+            futr_exog_list=futr_exog_list,
+            exclude_insample_y=exclude_insample_y,
             loss=loss,
             valid_loss=valid_loss,
             max_steps=max_steps,
@@ -109,44 +122,26 @@ class MLP(BaseWindows):
             start_padding_enabled=start_padding_enabled,
             step_size=step_size,
             scaler_type=scaler_type,
-            num_workers_loader=num_workers_loader,
-            drop_last_loader=drop_last_loader,
             random_seed=random_seed,
-            **trainer_kwargs,
+            drop_last_loader=drop_last_loader,
+            alias=alias,
+            optimizer=optimizer,
+            optimizer_kwargs=optimizer_kwargs,
+            lr_scheduler=lr_scheduler,
+            lr_scheduler_kwargs=lr_scheduler_kwargs,
+            dataloader_kwargs=dataloader_kwargs,
+            **trainer_kwargs
         )
-
-        # ------------------ Concentrator ------------------
-        self.use_concentrator = use_concentrator
-
-        if self.use_concentrator:
-            self.concentrator = Concentrator(
-                n_series=n_series,
-                type=concentrator_type,
-                init_ka1=init_ka1,
-                init_ka2=init_ka2,
-                init_ka3=init_ka3,
-                input_size=input_size,
-                freq=freq,
-                h=h,
-                mask_future=False,
-            )
-        else:
-            self.concentrator = None
-        # --------------------------------------------------
 
         # Architecture
         self.num_layers = num_layers
         self.hidden_size = hidden_size
 
-        self.futr_input_size = len(self.futr_exog_list)
-        self.hist_input_size = len(self.hist_exog_list)
-        self.stat_input_size = len(self.stat_exog_list)
-
         input_size_first_layer = (
             input_size
-            + self.hist_input_size * input_size
-            + self.futr_input_size * (input_size + h)
-            + self.stat_input_size
+            + self.hist_exog_size * input_size
+            + self.futr_exog_size * (input_size + h)
+            + self.stat_exog_size
         )
 
         # MultiLayer Perceptron
@@ -165,31 +160,25 @@ class MLP(BaseWindows):
     def forward(self, windows_batch):
 
         # Parse windows_batch
-        insample_y = windows_batch["insample_y"]
+        insample_y = windows_batch["insample_y"].squeeze(-1)
         futr_exog = windows_batch["futr_exog"]
         hist_exog = windows_batch["hist_exog"]
         stat_exog = windows_batch["stat_exog"]
-        batch_idx = windows_batch["batch_idx"]
-
-        if self.use_concentrator:
-            hist_exog = self.concentrator(
-                treatment_exog=hist_exog, idx=batch_idx
-            )
 
         # Flatten MLP inputs [B, L+H, C] -> [B, (L+H)*C]
         # Contatenate [ Y_t, | X_{t-L},..., X_{t} | F_{t-L},..., F_{t+H} | S ]
         batch_size = len(insample_y)
-        if self.hist_input_size > 0:
+        if self.hist_exog_size > 0:
             insample_y = torch.cat(
                 (insample_y, hist_exog.reshape(batch_size, -1)), dim=1
             )
 
-        if self.futr_input_size > 0:
+        if self.futr_exog_size > 0:
             insample_y = torch.cat(
                 (insample_y, futr_exog.reshape(batch_size, -1)), dim=1
             )
 
-        if self.stat_input_size > 0:
+        if self.stat_exog_size > 0:
             insample_y = torch.cat(
                 (insample_y, stat_exog.reshape(batch_size, -1)), dim=1
             )
@@ -198,5 +187,6 @@ class MLP(BaseWindows):
         for layer in self.mlp:
             y_pred = torch.relu(layer(y_pred))
         y_pred = self.out(y_pred)
-        y_pred = self.loss.domain_map(y_pred)
+
+        y_pred = y_pred.reshape(batch_size, self.h, self.loss.outputsize_multiplier)
         return y_pred
