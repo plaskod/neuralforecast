@@ -1,9 +1,14 @@
+import os
+
 def get_data_parameters(args):
     exog = {}
+    
+    # Get the absolute path of the project's root directory
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
     if args.dataset == 'simglucose':
-        data_dir = '../datasets/simglucose_exog_9_day_test.csv'
-        static_dir = '../datasets/simglucose_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'simglucose_exog_9_day_test.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'simglucose_static.csv')
         val_size = 2592
         test_size = 2592
         freq = '5min'
@@ -18,8 +23,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
 
     if args.dataset == 'simglucose_exog':
-        data_dir = '../datasets/simglucose_exog_9_day_test.csv'
-        static_dir = '../datasets/simglucose_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'simglucose_exog_9_day_test.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'simglucose_static.csv')
         val_size = 2592
         test_size = 2592
         freq = '5min'
@@ -34,8 +39,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None 
         
     if args.dataset == 'ohiot1dm':
-        data_dir = '../datasets/ohiot1dm_exog_9_day_test.csv'
-        static_dir = '../datasets/ohiot1dm_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_exog_9_day_test.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -47,8 +52,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None 
 
     if args.dataset == 'ohiot1dm_exog':
-        data_dir = '../datasets/ohiot1dm_exog_9_day_test.csv'
-        static_dir = '../datasets/ohiot1dm_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_exog_9_day_test.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -60,8 +65,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
 
     if args.dataset == 'ohiot1dm_exog_#540':
-        data_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#540_data.csv'
-        static_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#540_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#540_data.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#540_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -71,8 +76,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
         
     if args.dataset == 'ohiot1dm_exog_#544':
-        data_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#544_data.csv'
-        static_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#544_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#544_data.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#544_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -82,8 +87,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
         
     if args.dataset == 'ohiot1dm_exog_#552':
-        data_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#552_data.csv'
-        static_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#552_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#552_data.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#552_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -93,8 +98,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
         
     if args.dataset == 'ohiot1dm_exog_#559':
-        data_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#559_data.csv'
-        static_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#559_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#559_data.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#559_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -104,8 +109,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
         
     if args.dataset == 'ohiot1dm_exog_#563':
-        data_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#563_data.csv'
-        static_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#563_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#563_data.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#563_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -115,8 +120,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
         
     if args.dataset == 'ohiot1dm_exog_#567':
-        data_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#567_data.csv'
-        static_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#567_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#567_data.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#567_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -126,8 +131,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
         
     if args.dataset == 'ohiot1dm_exog_#570':
-        data_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#570_data.csv'
-        static_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#570_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#570_data.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#570_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -137,8 +142,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
         
     if args.dataset == 'ohiot1dm_exog_#575':
-        data_dir = +'../datasets/ohiot1dm_unique_id_data/ohiot1dm_#575_data.csv'
-        static_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#575_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#575_data.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#575_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -148,8 +153,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
         
     if args.dataset == 'ohiot1dm_exog_#584':
-        data_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#584_data.csv'
-        static_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#584_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#584_data.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#584_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -159,8 +164,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
         
     if args.dataset == 'ohiot1dm_exog_#588':
-        data_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#588_data.csv'
-        static_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#588_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#588_data.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#588_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -170,8 +175,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
         
     if args.dataset == 'ohiot1dm_exog_#591':
-        data_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#591_data.csv'
-        static_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#591_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#591_data.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#591_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'
@@ -181,8 +186,8 @@ def get_data_parameters(args):
         exog['futr_exog_list'] = None
         
     if args.dataset == 'ohiot1dm_exog_#596':
-        data_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#596_data.csv'
-        static_dir = '../datasets/ohiot1dm_unique_id_data/ohiot1dm_#596_static.csv'
+        data_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#596_data.csv')
+        static_dir = os.path.join(project_root, 'datasets', 'ohiot1dm_unique_id_data', 'ohiot1dm_#596_static.csv')
         val_size = 2691
         test_size = 2691
         freq = '5min'

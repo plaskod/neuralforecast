@@ -130,9 +130,9 @@ if __name__ == '__main__':
         exit()
 
     datasets = ['ohiot1dm',
-                'ohiot1dm_exog',
-                'simglucose',
-                'simglucose_exog',
+                # 'ohiot1dm_exog',
+                # 'simglucose',
+                # 'simglucose_exog',
                ]
     # datasets = ['ohiot1dm_exog_#540',
     #             'ohiot1dm_exog_#544',
