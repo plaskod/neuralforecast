@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from typing import Optional, List
 
-from neuralforecast.common._base_windows import BaseWindows
+from neuralforecast.common._base_model import BaseModel
 from neuralforecast.losses.pytorch import MAE
 
 try:
@@ -20,7 +20,7 @@ except ImportError:
     print("TabPFN Time Series not installed. Please install with: pip install tabpfn-time-series")
     TabPFNTimeSeriesPredictor = None
 
-class TabPFN(BaseWindows):
+class TabPFN(BaseModel):
     """TabPFN Time Series wrapper for NeuralForecast"""
 
     def __init__(
@@ -34,6 +34,9 @@ class TabPFN(BaseWindows):
         valid_loss=None,
         max_steps: int = 0,
         learning_rate: float = 1e-3,
+        num_lr_decays: int = -1,
+        early_stop_patience_steps: int = -1,
+        val_check_steps: int = 100,
         batch_size: int = 32,
         valid_batch_size: Optional[int] = None,
         windows_batch_size: int = 1024,
@@ -60,6 +63,9 @@ class TabPFN(BaseWindows):
             valid_loss=valid_loss,
             max_steps=0,
             learning_rate=learning_rate,
+            num_lr_decays=num_lr_decays,
+            early_stop_patience_steps=early_stop_patience_steps,
+            val_check_steps=val_check_steps,
             batch_size=batch_size,
             valid_batch_size=valid_batch_size,
             windows_batch_size=windows_batch_size,
@@ -68,7 +74,6 @@ class TabPFN(BaseWindows):
             step_size=step_size,
             scaler_type=scaler_type,
             random_seed=random_seed,
-            num_workers_loader=num_workers_loader,
             drop_last_loader=drop_last_loader,
             alias=alias,
             **trainer_kwargs
