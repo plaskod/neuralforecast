@@ -50,8 +50,6 @@ class TabPFN(BaseModel):
         alias: str = None,
         **trainer_kwargs
     ):
-        if TabPFNTimeSeriesPredictor is None:
-            raise ImportError("TabPFN Time Series not available")
             
         super().__init__(
             h=h,
