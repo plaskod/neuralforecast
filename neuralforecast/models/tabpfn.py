@@ -81,7 +81,7 @@ class TabPFN(BaseModel):
         
         # Initialize TabPFN predictor
         self.predictor = TabPFNTimeSeriesPredictor(
-            tabpfn_mode=TabPFNMode.CLIENT,
+            tabpfn_mode=TabPFNMode.LOCAL,
         )
         
         # Mark as fitted (no training needed)
