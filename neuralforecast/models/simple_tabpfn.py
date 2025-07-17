@@ -21,18 +21,13 @@ except ImportError:
     TabPFNTimeSeriesPredictor = None
 
 class TabPFN(BaseModel):
-    """
-    TabPFN Time Series wrapper for NeuralForecast.
-    
-    This is a lightweight implementation optimized for speed and compatibility.
-    TabPFN is a pre-trained model, so we bypass the complex training pipeline.
-    """
+    """Simple TabPFN Time Series wrapper for NeuralForecast"""
 
     def __init__(
         self,
         h: int,
         input_size: int,
-        max_context_length: int = 8000,  # Reduced from 10000 for better performance
+        max_context_length: int = 8000,
         stat_exog_list: Optional[List[str]] = None,
         hist_exog_list: Optional[List[str]] = None,
         futr_exog_list: Optional[List[str]] = None,
@@ -86,13 +81,11 @@ class TabPFN(BaseModel):
         if TabPFNTimeSeriesPredictor is None:
             raise ImportError("TabPFN Time Series not installed. Please install with: pip install tabpfn-time-series")
         
-        # TabPFN specific parameters
+        # TabPFN specific settings
         self.max_context_length = max_context_length
         
-        # Initialize TabPFN predictor (do this lazily to avoid initialization overhead)
+        # Lazy initialization of TabPFN predictor
         self._predictor = None
-        
-        print(f"TabPFN initialized with max_context_length={self.max_context_length}")
         
     @property
     def predictor(self):
@@ -110,9 +103,9 @@ class TabPFN(BaseModel):
         """No-op training step for PyTorch Lightning compatibility"""
         return torch.tensor(0.0, requires_grad=True)
     
-    def _predict_single_series(self, series_data, series_id=0):
+    def _predict_single_series_window(self, series_data, series_id=0):
         """
-        Predict a single time series with TabPFN
+        Predict a single time series window with TabPFN
         """
         # Handle context window limitation
         if len(series_data) > self.max_context_length:
@@ -141,8 +134,12 @@ class TabPFN(BaseModel):
             # Generate test periods for prediction
             test_tsdf = generate_test_X(train_tsdf, self.h)
             
-            # Simple feature transformation (minimal to reduce overhead)
-            selected_features = [RunningIndexFeature()]
+            # Feature transformation according to demo code snippet
+            selected_features = [
+                RunningIndexFeature(),
+                CalendarFeature(),
+                AutoSeasonalFeature(),
+            ]
             
             feature_transformer = FeatureTransformer(selected_features)
             train_tsdf_transformed, test_tsdf_transformed = feature_transformer.transform(
@@ -178,49 +175,10 @@ class TabPFN(BaseModel):
                 naive_forecast = series_data[-1] if len(series_data) > 0 else 0.0
             return np.full(self.h, naive_forecast)
     
-    def predict(self, dataset, step_size=1, **data_module_kwargs):
-        """
-        Custom predict method optimized for TabPFN
-        """
-        # Extract data from the dataset
-        temporal_data = dataset.temporal.numpy()  # [total_time_points, features]
-        indptr = dataset.indptr  # [n_series + 1] - indices for each series
-        n_series = dataset.n_groups
-        
-        print(f"TabPFN predict: {n_series} series")
-        
-        # Predict each series
-        predictions_list = []
-        
-        for i in range(n_series):
-            # Get this series data
-            start_idx = indptr[i]
-            end_idx = indptr[i + 1]
-            series_temporal = temporal_data[start_idx:end_idx]  # [series_length, features]
-            
-            # Extract target values (assuming y is at index 0)
-            y_values = series_temporal[:, 0]
-            
-            # Remove NaN values from the end
-            valid_mask = ~np.isnan(y_values)
-            if valid_mask.any():
-                last_valid_idx = np.where(valid_mask)[0][-1]
-                valid_y = y_values[:last_valid_idx + 1]
-            else:
-                valid_y = np.array([0.0])  # Fallback if no valid data
-            
-            # Predict this series
-            series_predictions = self._predict_single_series(valid_y, i)
-            predictions_list.append(series_predictions.reshape(-1, 1))
-        
-        # Stack all predictions: [n_series * h, 1]
-        all_predictions = np.vstack(predictions_list)
-        print(f"TabPFN predict: returning shape {all_predictions.shape}")
-        return all_predictions
-        
     def forward(self, windows_batch):
         """
-        Minimal forward method for compatibility
+        Forward method that works with PyTorch Lightning's predict_step.
+        This is called automatically by the framework for cross-validation.
         """
         # Extract insample data
         insample_y = windows_batch["insample_y"]  # [B, L, 1]
@@ -229,7 +187,7 @@ class TabPFN(BaseModel):
         # Initialize predictions array
         predictions = torch.zeros(batch_size, self.h, 1, device=insample_y.device, dtype=insample_y.dtype)
         
-        # Process each series in the batch (simplified)
+        # Process each series/window in the batch
         for i in range(batch_size):
             series_data = insample_y[i, :, 0]  # [L]
             
@@ -247,7 +205,7 @@ class TabPFN(BaseModel):
             train_data = series_data[:last_valid_idx+1].detach().cpu().numpy()
             
             # Get predictions
-            series_pred = self._predict_single_series(train_data, i)
+            series_pred = self._predict_single_series_window(train_data, i)
             
             # Convert back to tensor
             pred_tensor = torch.tensor(series_pred, dtype=insample_y.dtype, device=insample_y.device)

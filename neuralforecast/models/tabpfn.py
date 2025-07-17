@@ -27,6 +27,8 @@ class TabPFN(BaseModel):
         self,
         h: int,
         input_size: int,
+        max_context_length: int = 10000,
+        ignore_pretraining_limits: bool = True,
         stat_exog_list: Optional[List[str]] = None,
         hist_exog_list: Optional[List[str]] = None,
         futr_exog_list: Optional[List[str]] = None,
@@ -80,15 +82,35 @@ class TabPFN(BaseModel):
         if TabPFNTimeSeriesPredictor is None:
             raise ImportError("TabPFN Time Series not installed. Please install with: pip install tabpfn-time-series")
         
+        # TabPFN context window handling
+        self.max_context_length = max_context_length
+        self.ignore_pretraining_limits = ignore_pretraining_limits
+        
         # Initialize TabPFN predictor
         self.predictor = TabPFNTimeSeriesPredictor(
             tabpfn_mode=TabPFNMode.LOCAL,
         )
 
-        print(type(self.predictor))
+        print(f"TabPFN initialized with max_context_length={self.max_context_length}, ignore_pretraining_limits={self.ignore_pretraining_limits}")
         
         # Cache for predictions to avoid re-computation
         self._prediction_cache = {}
+        
+    def _truncate_series_data(self, y_values, max_length=None):
+        """
+        Truncate series data to fit within TabPFN's context window.
+        Uses the most recent data points.
+        """
+        if max_length is None:
+            max_length = self.max_context_length
+            
+        if len(y_values) <= max_length:
+            return y_values
+            
+        # Use the most recent data points
+        truncated_data = y_values[-max_length:]
+        print(f"Truncated series from {len(y_values)} to {len(truncated_data)} points")
+        return truncated_data
         
     def fit(self, dataset, val_size=0, test_size=0, random_seed=None, distributed_config=None):
         """No training needed for TabPFN"""
@@ -142,13 +164,16 @@ class TabPFN(BaseModel):
             last_valid_idx = valid_indices[-1]
             valid_y = y_values[:last_valid_idx + 1]
             
-            print(f"Series {i}: valid_y length={len(valid_y)}")
+            # Truncate data to fit within TabPFN's context window
+            truncated_y = self._truncate_series_data(valid_y)
+            
+            print(f"Series {i}: valid_y length={len(valid_y)}, truncated_y length={len(truncated_y)}")
             
             # Only proceed if we have enough data
-            if len(valid_y) < 2:
+            if len(truncated_y) < 2:
                 # Use simple naive forecast
-                if len(valid_y) > 0:
-                    naive_forecast = valid_y[-1]
+                if len(truncated_y) > 0:
+                    naive_forecast = truncated_y[-1]
                 else:
                     naive_forecast = 0.0
                 series_predictions = np.full(self.h, naive_forecast)
@@ -157,12 +182,12 @@ class TabPFN(BaseModel):
             
             try:
                 # Create DataFrame for TabPFN
-                timestamps = pd.date_range(start='2020-01-01', periods=len(valid_y), freq='5T')
+                timestamps = pd.date_range(start='2020-01-01', periods=len(truncated_y), freq='5T')
                 
                 train_df = pd.DataFrame({
                     'item_id': f'series_{i}',
                     'timestamp': timestamps,
-                    'target': valid_y
+                    'target': truncated_y
                 })
                 
                 # Convert to AutoGluon TimeSeriesDataFrame
@@ -185,10 +210,21 @@ class TabPFN(BaseModel):
                     train_tsdf, test_tsdf
                 )
 
-                # Make prediction
-                pred_tsdf = self.predictor.predict(
-                    train_tsdf_transformed, test_tsdf_transformed
-                )
+                # Make prediction with TabPFN context limits handling
+                try:
+                    pred_tsdf = self.predictor.predict(
+                        train_tsdf_transformed, test_tsdf_transformed
+                    )
+                except Exception as tabpfn_error:
+                    if "greater than the maximum number of samples" in str(tabpfn_error) and not self.ignore_pretraining_limits:
+                        # Try with ignore_pretraining_limits if the error is about sample limits
+                        print(f"Retrying series {i} with ignore_pretraining_limits=True")
+                        pred_tsdf = self.predictor.predict(
+                            train_tsdf_transformed, test_tsdf_transformed,
+                            ignore_pretraining_limits=True
+                        )
+                    else:
+                        raise tabpfn_error
                 
                 # Extract predictions
                 pred_values = pred_tsdf['target'].values
@@ -201,17 +237,17 @@ class TabPFN(BaseModel):
                     if len(pred_values) > 0:
                         series_predictions[len(pred_values):] = pred_values[-1]
                     else:
-                        series_predictions[:] = valid_y[-1] if len(valid_y) > 0 else 0.0
+                        series_predictions[:] = truncated_y[-1] if len(truncated_y) > 0 else 0.0
                 
                 predictions_list.append(series_predictions.reshape(-1, 1))
                 
             except Exception as e:
                 print(f"TabPFN failed for series {i}: {e}")
                 # If TabPFN fails, use simple naive forecast
-                if len(valid_y) >= 5:
-                    naive_forecast = np.mean(valid_y[-5:])
-                elif len(valid_y) > 0:
-                    naive_forecast = np.mean(valid_y)
+                if len(truncated_y) >= 5:
+                    naive_forecast = np.mean(truncated_y[-5:])
+                elif len(truncated_y) > 0:
+                    naive_forecast = np.mean(truncated_y)
                 else:
                     naive_forecast = 0.0
                 series_predictions = np.full(self.h, naive_forecast)
@@ -252,11 +288,15 @@ class TabPFN(BaseModel):
             last_valid_idx = valid_indices[-1].item()
             train_data = series_data[:last_valid_idx+1]
             
+            # Convert to numpy for truncation
+            train_data_np = train_data.detach().cpu().numpy()
+            truncated_data = self._truncate_series_data(train_data_np)
+            
             # Only proceed if we have enough data
-            if len(train_data) < 2:
+            if len(truncated_data) < 2:
                 # Use simple naive forecast
-                if len(train_data) > 0:
-                    naive_forecast = train_data[-1].item()
+                if len(truncated_data) > 0:
+                    naive_forecast = truncated_data[-1]
                 else:
                     naive_forecast = 0.0
                 predictions[i, :, 0] = naive_forecast
@@ -264,12 +304,12 @@ class TabPFN(BaseModel):
                 
             try:
                 # Convert to pandas DataFrame with proper timestamps
-                timestamps = pd.date_range(start='2020-01-01', periods=len(train_data), freq='5T')
+                timestamps = pd.date_range(start='2020-01-01', periods=len(truncated_data), freq='5T')
                 
                 train_df = pd.DataFrame({
                     'item_id': f'series_{i}',
                     'timestamp': timestamps,
-                    'target': train_data.detach().cpu().numpy()
+                    'target': truncated_data
                 })
                 
                 # Convert to AutoGluon TimeSeriesDataFrame
@@ -292,10 +332,20 @@ class TabPFN(BaseModel):
                     train_tsdf, test_tsdf
                 )
 
-                # Make prediction
-                pred_tsdf = self.predictor.predict(
-                    train_tsdf_transformed, test_tsdf_transformed
-                )
+                # Make prediction with TabPFN context limits handling
+                try:
+                    pred_tsdf = self.predictor.predict(
+                        train_tsdf_transformed, test_tsdf_transformed
+                    )
+                except Exception as tabpfn_error:
+                    if "greater than the maximum number of samples" in str(tabpfn_error) and not self.ignore_pretraining_limits:
+                        # Try with ignore_pretraining_limits if the error is about sample limits
+                        pred_tsdf = self.predictor.predict(
+                            train_tsdf_transformed, test_tsdf_transformed,
+                            ignore_pretraining_limits=True
+                        )
+                    else:
+                        raise tabpfn_error
                 
                 # Extract predictions and convert back to tensor
                 pred_values = pred_tsdf['target'].values
@@ -311,10 +361,10 @@ class TabPFN(BaseModel):
                 
             except Exception as e:
                 # If TabPFN fails, use simple naive forecast
-                if len(train_data) >= 5:
-                    naive_forecast = torch.mean(train_data[-5:]).item()
-                elif len(train_data) > 0:
-                    naive_forecast = torch.mean(train_data).item()
+                if len(truncated_data) >= 5:
+                    naive_forecast = np.mean(truncated_data[-5:])
+                elif len(truncated_data) > 0:
+                    naive_forecast = np.mean(truncated_data)
                 else:
                     naive_forecast = 0.0
                 predictions[i, :, 0] = naive_forecast
