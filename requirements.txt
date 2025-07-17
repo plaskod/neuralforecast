@@ -89,7 +89,6 @@ multiprocess==0.70.16
 narwhals==1.46.0
 nest-asyncio==1.6.0
 networkx==3.5
--e file:///Users/dap/auton_lab/pharmocokinetic_priors/neuralforecast
 numba==0.61.2
 numpy==1.26.4
 omegaconf==2.3.0
@@ -179,3 +178,5 @@ wrapt==1.17.2
 xgboost==3.0.2
 xxhash==3.5.0
 yarl==1.20.1
+tabpfn-time-series
+scipy
