@@ -162,6 +162,14 @@ class TabPFNTS(BaseModel):
         self.tabpfn_mode = tabpfn_mode if tabpfn_mode is not None else (TabPFNMode.LOCAL if TabPFNMode else None)
         self.debug = debug
         
+        # Initialize TabPFN predictor
+        if _tabpfn_available:
+            self.predictor = TabPFNTimeSeriesPredictor(
+                tabpfn_mode=self.tabpfn_mode,
+            )
+        else:
+            self.predictor = None
+        
         # Initialize prediction cache
         self._prediction_cache = {}
         
@@ -171,6 +179,8 @@ class TabPFNTS(BaseModel):
             print(f"  - Input size: {self.input_size}")
             print(f"  - Context length: {self.context_length}")
             print(f"  - TabPFN mode: {self.tabpfn_mode}")
+            print(f"  - TabPFN available: {_tabpfn_available}")
+            print(f"  - Exogenous support: hist={len(self.hist_exog_list)}, stat={len(self.stat_exog_list)}, futr={len(self.futr_exog_list)}")
 
     def fit(self, dataset, val_size=0, test_size=0, random_seed=None, distributed_config=None):
         """
@@ -283,7 +293,7 @@ class TabPFNTS(BaseModel):
             try:
                 # Make prediction using TabPFN with exogenous variables
                 series_predictions = self._make_tabpfn_prediction_with_exog(
-                    truncated_data, truncated_exog, futr_exog_data, stat_exog_data
+                    truncated_data, truncated_exog, futr_exog_data, stat_exog_data, i
                 )
                 
                 # Convert back to tensor
@@ -375,7 +385,7 @@ class TabPFNTS(BaseModel):
         truncated_data, _ = self._truncate_context_with_exog(y_values, None)
         return truncated_data
 
-    def _make_tabpfn_prediction_with_exog(self, y_values, exog_features, futr_exog_data, stat_exog_data):
+    def _make_tabpfn_prediction_with_exog(self, y_values, exog_features, futr_exog_data, stat_exog_data, window_idx):
         """
         Make prediction using TabPFN for a single time series with exogenous variables.
         This integrates exogenous variables into the TabPFN prediction process.
@@ -390,13 +400,13 @@ class TabPFNTS(BaseModel):
                 input_data = y_values.reshape(-1, 1)
             
             # Use actual TabPFN prediction if available, otherwise use enhanced heuristic
-            predictions = self._tabpfn_predict_with_features(input_data, y_values)
+            predictions = self._tabpfn_predict_with_features(input_data, y_values, exog_features, window_idx)
             
             return predictions
             
         except Exception as e:
             if self.debug:
-                print(f"TabPFN prediction with exog error: {e}")
+                print(f"TabPFN prediction with exog error for window {window_idx}: {e}")
             # Fallback to simple prediction
             return self._make_tabpfn_prediction(y_values)
 
@@ -418,21 +428,167 @@ class TabPFNTS(BaseModel):
         
         return combined_input
 
-    def _tabpfn_predict_with_features(self, input_data, y_values):
+    def _tabpfn_predict_with_features(self, input_data, y_values, exog_features, window_idx):
         """
-        Make TabPFN prediction using the combined input data.
-        This is where you would integrate with the actual TabPFN API.
+        Make TabPFN prediction using the combined input data with real TabPFN API.
+        This integrates with the actual TabPFN time series predictor.
         """
         try:
-            # TODO: Replace this with actual TabPFN API call
-            # For now, use an enhanced heuristic that considers exogenous variables
+            if not _tabpfn_available or self.predictor is None:
+                if self.debug:
+                    print(f"TabPFN not available, falling back to heuristic for window {window_idx}")
+                return self._make_tabpfn_prediction_fallback(input_data, y_values)
             
+            # Create TimeSeriesDataFrame for TabPFN
+            train_tsdf = self._create_tabpfn_dataframe(y_values, exog_features, window_idx)
+            
+            # Generate test periods for prediction
+            test_tsdf = generate_test_X(train_tsdf, self.h)
+            
+            # Apply feature transformation
+            feature_transformer = self._create_feature_transformer()
+            train_tsdf_transformed, test_tsdf_transformed = feature_transformer.transform(
+                train_tsdf, test_tsdf
+            )
+            
+            # Make prediction with TabPFN
+            pred_tsdf = self._predict_with_tabpfn(
+                train_tsdf_transformed, test_tsdf_transformed, window_idx
+            )
+            
+            # Extract and process predictions
+            predictions = self._extract_tabpfn_predictions(pred_tsdf, y_values)
+            
+            if self.debug and window_idx == 0:
+                print(f"TabPFN prediction successful for window {window_idx}, shape: {predictions.shape}")
+            
+            return predictions
+            
+        except Exception as e:
+            if self.debug:
+                print(f"TabPFN prediction error for window {window_idx}: {e}")
+            # Fall back to enhanced heuristic
+            return self._make_tabpfn_prediction_fallback(input_data, y_values)
+
+    def _create_tabpfn_dataframe(self, y_values, exog_features, window_idx):
+        """
+        Create TimeSeriesDataFrame for TabPFN with exogenous variables.
+        """
+        n_points = len(y_values)
+        
+        # Create timestamps (TabPFN needs proper datetime index)
+        timestamps = pd.date_range(start='2020-01-01', periods=n_points, freq='5T')
+        
+        # Base dataframe with target values
+        data_dict = {
+            'item_id': f'series_{window_idx}',
+            'timestamp': timestamps,
+            'target': y_values
+        }
+        
+        # Add exogenous features if available
+        if exog_features is not None and exog_features.shape[1] > 0:
+            # Add historical exogenous variables
+            if self.hist_exog_size > 0:
+                hist_end_idx = self.hist_exog_size
+                for i, col_name in enumerate(self.hist_exog_list):
+                    if i < hist_end_idx and i < exog_features.shape[1]:
+                        data_dict[col_name] = exog_features[:, i]
+            
+            # Add static exogenous variables (repeated for each time step)
+            if self.stat_exog_size > 0:
+                stat_start_idx = self.hist_exog_size
+                for i, col_name in enumerate(self.stat_exog_list):
+                    col_idx = stat_start_idx + i
+                    if col_idx < exog_features.shape[1]:
+                        # Static features are already repeated in exog_features
+                        data_dict[col_name] = exog_features[:, col_idx]
+        
+        # Create DataFrame
+        train_df = pd.DataFrame(data_dict)
+        
+        # Convert to AutoGluon TimeSeriesDataFrame
+        train_tsdf = TimeSeriesDataFrame.from_data_frame(
+            train_df, id_column="item_id", timestamp_column="timestamp"
+        )
+        
+        return train_tsdf
+
+    def _create_feature_transformer(self):
+        """
+        Create feature transformer for TabPFN with appropriate features.
+        """
+        # Use standard time series features that work well with TabPFN
+        selected_features = [
+            RunningIndexFeature(),
+            CalendarFeature(),
+            AutoSeasonalFeature(),
+        ]
+        
+        return FeatureTransformer(selected_features)
+
+    def _predict_with_tabpfn(self, train_tsdf_transformed, test_tsdf_transformed, window_idx):
+        """
+        Make prediction with TabPFN predictor, handling context limits.
+        """
+        try:
+            # First attempt with normal settings
+            pred_tsdf = self.predictor.predict(
+                train_tsdf_transformed, test_tsdf_transformed
+            )
+            return pred_tsdf
+            
+        except Exception as tabpfn_error:
+            error_msg = str(tabpfn_error)
+            
+            # Handle context limit errors
+            if "greater than the maximum number of samples" in error_msg:
+                if self.debug:
+                    print(f"Context limit exceeded for window {window_idx}, retrying with ignore_pretraining_limits=True")
+                
+                pred_tsdf = self.predictor.predict(
+                    train_tsdf_transformed, test_tsdf_transformed,
+                    ignore_pretraining_limits=True
+                )
+                return pred_tsdf
+            else:
+                # Re-raise other errors
+                raise tabpfn_error
+
+    def _extract_tabpfn_predictions(self, pred_tsdf, y_values):
+        """
+        Extract predictions from TabPFN result and ensure proper shape.
+        """
+        pred_values = pred_tsdf['target'].values
+        
+        if len(pred_values) >= self.h:
+            # Use the first h predictions
+            predictions = pred_values[:self.h]
+        else:
+            # Pad with last prediction if needed
+            predictions = np.zeros(self.h)
+            predictions[:len(pred_values)] = pred_values
+            
+            if len(pred_values) > 0:
+                # Fill remaining with last predicted value
+                predictions[len(pred_values):] = pred_values[-1]
+            else:
+                # No predictions available, use last observed value
+                predictions[:] = y_values[-1] if len(y_values) > 0 else 0.0
+        
+        return predictions
+
+    def _make_tabpfn_prediction_fallback(self, input_data, y_values):
+        """
+        Enhanced fallback prediction when TabPFN is not available.
+        Uses exogenous variables in a simple heuristic.
+        """
+        try:
             if input_data.shape[1] == 1:
-                # Only target variable, use simple method
+                # Only target variable available
                 return self._make_tabpfn_prediction(y_values)
             
             # Enhanced prediction using exogenous variables
-            # This is a placeholder - in practice, you'd use TabPFN's API
             n_features = input_data.shape[1]
             
             if len(y_values) >= 2:
@@ -440,13 +596,12 @@ class TabPFNTS(BaseModel):
                 target_trend = y_values[-1] - y_values[-2]
                 
                 # Simple way to incorporate exogenous influence
-                if n_features > 1:
-                    # Calculate feature changes if we have enough data
-                    exog_influence = 0.0
-                    if len(input_data) >= 2:
-                        recent_exog = input_data[-2:, 1:]  # Last 2 points, exclude target
-                        exog_change = np.mean(recent_exog[-1] - recent_exog[-2])
-                        exog_influence = exog_change * 0.1  # Small influence factor
+                exog_influence = 0.0
+                if n_features > 1 and len(input_data) >= 2:
+                    # Calculate feature changes
+                    recent_exog = input_data[-2:, 1:]  # Last 2 points, exclude target
+                    exog_change = np.mean(recent_exog[-1] - recent_exog[-2])
+                    exog_influence = exog_change * 0.1  # Small influence factor
                 
                 # Combine trend with exogenous influence
                 adjusted_trend = target_trend + exog_influence
@@ -457,9 +612,7 @@ class TabPFNTS(BaseModel):
             return np.array(predictions)
             
         except Exception as e:
-            if self.debug:
-                print(f"TabPFN feature prediction error: {e}")
-            # Final fallback
+            # Final fallback to simple prediction
             return self._make_tabpfn_prediction(y_values)
 
     def _make_tabpfn_prediction(self, y_values):
