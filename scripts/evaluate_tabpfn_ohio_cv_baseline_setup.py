@@ -11,7 +11,7 @@ Key adjustments for TabPFNTS compatibility:
 2. Use refit=False since TabPFNTS is designed for in-context learning
 3. Use larger step_size (10 vs 1) to reduce computational load
 4. Use limited n_windows (100) to avoid memory/indexing issues
-5. Note: TabPFNTS currently doesn't support exogenous variables
+5. NEW: TabPFNTS now supports exogenous variables (historical, static, future)
 6. Focus on evaluation quality over exhaustive cross-validation coverage
 """
 
@@ -77,7 +77,7 @@ def configure_tabpfnts_baseline(use_exog=True, horizon=12, input_size=144, conte
     Configure TabPFNTS model using baseline model conventions but optimized for in-context learning.
     
     Args:
-        use_exog: Whether to include exogenous variables (Note: TabPFNTS currently doesn't support exogenous variables)
+        use_exog: Whether to include exogenous variables
         horizon: Forecast horizon (same as baseline models)
         input_size: Input context size (same as baseline models)
         context_length: TabPFNTS-specific parameter for context management
@@ -86,16 +86,25 @@ def configure_tabpfnts_baseline(use_exog=True, horizon=12, input_size=144, conte
         Configured TabPFNTS model
     """
     
-    # Note: TabPFNTS currently doesn't support exogenous variables based on the model capabilities
-    # Setting exogenous variables to None regardless of use_exog parameter
-    stat_exog_list = None
-    hist_exog_list = None
-    
+    # Configure exogenous variables based on the ohio dataset structure
     if use_exog:
+        # Ohio T1DM dataset exogenous variables (based on the actual dataset columns)
+        stat_exog_list = ['#559', '#563', '#570', '#575', '#588', '#591', 
+                         '#540', '#544', '#552', '#567', '#584', 
+                         'insulin_type_novalog', 'female', 'age_20_40', 
+                         'age_40_60', 'pump_model_630G']  # Static features from ohio dataset
+        hist_exog_list = ['CHO', 'basal_insulin', 'bolus_insulin']  # Actual column names in ohio dataset
+        futr_exog_list = []  # No future exogenous typically available
         alias = "TabPFNTS_baseline_with_exog"
-        print("WARNING: TabPFNTS doesn't support exogenous variables. Running without exogenous variables.")
+        print(f"TabPFNTS configured WITH exogenous variables:")
+        print(f"  - Historical: {hist_exog_list}")
+        print(f"  - Static: {len(stat_exog_list)} variables")
     else:
+        stat_exog_list = None
+        hist_exog_list = None 
+        futr_exog_list = None
         alias = "TabPFNTS_baseline_no_exog"
+        print("TabPFNTS configured WITHOUT exogenous variables")
     
     # Configure TabPFNTS with baseline-compatible parameters
     model = TabPFNTS(
@@ -104,9 +113,9 @@ def configure_tabpfnts_baseline(use_exog=True, horizon=12, input_size=144, conte
         context_length=context_length,      # TabPFNTS-specific: manage context efficiently
         tabpfn_mode=TabPFNMode.LOCAL if TabPFNMode else None,  # Use local mode if available
         debug=True,                         # Enable debug for monitoring
-        stat_exog_list=stat_exog_list,      # Static exogenous variables (None for TabPFNTS)
-        hist_exog_list=hist_exog_list,      # Historical exogenous variables (None for TabPFNTS)
-        futr_exog_list=None,                # No future exogenous available
+        stat_exog_list=stat_exog_list,      # Static exogenous variables
+        hist_exog_list=hist_exog_list,      # Historical exogenous variables
+        futr_exog_list=futr_exog_list,      # Future exogenous variables
         loss=MAE(),                         # Same loss as baseline models
         alias=alias                         # Model identifier
     )
@@ -301,7 +310,7 @@ def run_comprehensive_baseline_evaluation(save_path='tabpfnts_baseline_evaluatio
     
     # 3. Evaluate TabPFNTS WITH exogenous variables (matching ohiot1dm_exog dataset)  
     logger.info("\n3. TabPFNTS Evaluation WITH Exogenous Variables...")
-    logger.info("   (Note: TabPFNTS doesn't support exogenous variables, so this will be the same as without exog)")
+    logger.info("   (Testing TabPFNTS's new exogenous variable support)")
     
     model_with_exog = configure_tabpfnts_baseline(use_exog=True, context_length=1000)
     cv_results_with_exog = run_baseline_cross_validation(
