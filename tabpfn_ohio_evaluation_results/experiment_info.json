@@ -1,0 +1,13 @@
+{
+  "experiment_date": "2025-07-17 12:39:19",
+  "dataset": "Ohio T1DM",
+  "model": "TabPFN",
+  "horizon": 12,
+  "cv_windows": 5,
+  "duration_no_exog_seconds": 1.566608,
+  "duration_with_exog_seconds": 0.927967,
+  "configurations": [
+    "without_exogenous",
+    "with_exogenous"
+  ]
+}

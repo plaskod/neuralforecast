@@ -1,0 +1,196 @@
+{
+  "evaluation_setup": "baseline_compatible",
+  "cross_validation_parameters": {
+    "val_size": 2691,
+    "test_size": 2691,
+    "step_size": 1,
+    "n_windows": "auto_calculated",
+    "refit": false,
+    "frequency": "5T"
+  },
+  "tabpfnts_parameters": {
+    "horizon": 12,
+    "input_size": 144,
+    "context_length": 1000
+  },
+  "metrics_no_exog": {
+    "mae": 24.144129079182942,
+    "mse": 1591.3809891896358,
+    "rmse": 39.89211688027643,
+    "mape": 16.937842829689988,
+    "smape": 15.661998648646783,
+    "n_predictions": 14400,
+    "mean_glucose_actual": 161.36798611111112,
+    "std_glucose_actual": 57.76224800469042,
+    "mean_glucose_predicted": 161.14427185058594,
+    "std_glucose_predicted": 54.13947296142578,
+    "glucose_range_accuracy": 68.59027777777777,
+    "clinical_range_overlap": 95.72744760554825,
+    "per_patient": {
+      "#540": {
+        "mae": 29.10937354405721,
+        "rmse": 44.02927529533317,
+        "n_predictions": 1200,
+        "mean_glucose": 161.375
+      },
+      "#544": {
+        "mae": 19.062873967488606,
+        "rmse": 30.350580774519795,
+        "n_predictions": 1200,
+        "mean_glucose": 141.54
+      },
+      "#552": {
+        "mae": 0.0,
+        "rmse": 0.0,
+        "n_predictions": 1200,
+        "mean_glucose": 134.0
+      },
+      "#559": {
+        "mae": 26.517596864700316,
+        "rmse": 44.38869933027714,
+        "n_predictions": 1200,
+        "mean_glucose": 180.3125
+      },
+      "#563": {
+        "mae": 31.959579156239826,
+        "rmse": 44.36050760451836,
+        "n_predictions": 1200,
+        "mean_glucose": 163.5725
+      },
+      "#567": {
+        "mae": 24.493644040425618,
+        "rmse": 36.43067807433542,
+        "n_predictions": 1200,
+        "mean_glucose": 142.2025
+      },
+      "#570": {
+        "mae": 23.679891169865925,
+        "rmse": 40.32247516849321,
+        "n_predictions": 1200,
+        "mean_glucose": 194.95
+      },
+      "#575": {
+        "mae": 36.12350477854411,
+        "rmse": 52.976445664672156,
+        "n_predictions": 1200,
+        "mean_glucose": 153.9725
+      },
+      "#584": {
+        "mae": 29.16353281656901,
+        "rmse": 50.77157168143197,
+        "n_predictions": 1200,
+        "mean_glucose": 177.48833333333334
+      },
+      "#588": {
+        "mae": 24.401637719472248,
+        "rmse": 38.521400622491335,
+        "n_predictions": 1200,
+        "mean_glucose": 181.31416666666667
+      },
+      "#591": {
+        "mae": 25.572057530085246,
+        "rmse": 38.53306152675248,
+        "n_predictions": 1200,
+        "mean_glucose": 149.71
+      },
+      "#596": {
+        "mae": 19.645857362747194,
+        "rmse": 31.505206541953303,
+        "n_predictions": 1200,
+        "mean_glucose": 155.97833333333332
+      }
+    }
+  },
+  "metrics_with_exog": {
+    "mae": 24.68025969372855,
+    "mse": 1634.8753261638324,
+    "rmse": 40.43359155657375,
+    "mape": 17.32158009701272,
+    "smape": 16.019315814090618,
+    "n_predictions": 14400,
+    "mean_glucose_actual": 161.36798611111112,
+    "std_glucose_actual": 57.76224800469042,
+    "mean_glucose_predicted": 161.231689453125,
+    "std_glucose_predicted": 53.97594451904297,
+    "glucose_range_accuracy": 68.32638888888889,
+    "clinical_range_overlap": 96.09716434597011,
+    "per_patient": {
+      "#540": {
+        "mae": 29.54000110944112,
+        "rmse": 44.08350294388927,
+        "n_predictions": 1200,
+        "mean_glucose": 161.375
+      },
+      "#544": {
+        "mae": 20.245851593017576,
+        "rmse": 31.674582656720215,
+        "n_predictions": 1200,
+        "mean_glucose": 141.54
+      },
+      "#552": {
+        "mae": 0.0,
+        "rmse": 0.0,
+        "n_predictions": 1200,
+        "mean_glucose": 134.0
+      },
+      "#559": {
+        "mae": 27.20008150736491,
+        "rmse": 45.24434125726514,
+        "n_predictions": 1200,
+        "mean_glucose": 180.3125
+      },
+      "#563": {
+        "mae": 32.42361651102702,
+        "rmse": 44.634170253523116,
+        "n_predictions": 1200,
+        "mean_glucose": 163.5725
+      },
+      "#567": {
+        "mae": 24.72658635775248,
+        "rmse": 36.511612948891404,
+        "n_predictions": 1200,
+        "mean_glucose": 142.2025
+      },
+      "#570": {
+        "mae": 23.00735592206319,
+        "rmse": 39.10075508237187,
+        "n_predictions": 1200,
+        "mean_glucose": 194.95
+      },
+      "#575": {
+        "mae": 37.97026873270671,
+        "rmse": 55.45014688263479,
+        "n_predictions": 1200,
+        "mean_glucose": 153.9725
+      },
+      "#584": {
+        "mae": 30.161653690338134,
+        "rmse": 51.40743486779834,
+        "n_predictions": 1200,
+        "mean_glucose": 177.48833333333334
+      },
+      "#588": {
+        "mae": 25.830274028778078,
+        "rmse": 40.20711270387441,
+        "n_predictions": 1200,
+        "mean_glucose": 181.31416666666667
+      },
+      "#591": {
+        "mae": 24.967209278742473,
+        "rmse": 37.47575094863058,
+        "n_predictions": 1200,
+        "mean_glucose": 149.71
+      },
+      "#596": {
+        "mae": 20.090217593510946,
+        "rmse": 32.12718517673947,
+        "n_predictions": 1200,
+        "mean_glucose": 155.97833333333332
+      }
+    }
+  },
+  "comparison": {
+    "mae_improvement_pct": -2.220542363683189,
+    "rmse_improvement_pct": -1.3573475629843972
+  }
+}
