@@ -31,3 +31,5 @@ checkpoints
 nbs/_extensions/mintlify
 *.env
 OhioT1DM/
+
+.venv/
