@@ -478,7 +478,8 @@ class MOMENTRetriever:
         print(f"📚 Initialized retriever with {len(train_windows)} train windows")
         print(f"📊 Embedding matrix shape: {self.train_embeddings.shape}")
     
-    def retrieve_similar(self, query_embedding, top_k=5, return_similarities=True):
+    def retrieve_similar(self, query_embedding, top_k=5, return_similarities=True, 
+                        temporal_filter=False, temporal_threshold=20):
         """
         Retrieve top-k most similar train windows for a query embedding.
         
@@ -486,6 +487,8 @@ class MOMENTRetriever:
             query_embedding: numpy array of shape (embedding_dim,)
             top_k: number of most similar windows to retrieve
             return_similarities: whether to return similarity scores
+            temporal_filter: if True, filter out temporally close windows from same item_id
+            temporal_threshold: minimum timestep difference to consider windows as different
             
         Returns:
             List of tuples: (window_dict, similarity_score) if return_similarities=True
@@ -498,21 +501,61 @@ class MOMENTRetriever:
         # Compute cosine similarities
         similarities = cosine_similarity(query_embedding, self.train_embeddings)[0]
         
-        # Get top-k indices
-        top_k_indices = np.argsort(similarities)[-top_k:][::-1]  # Descending order
-        
-        # Retrieve corresponding windows and similarities
-        results = []
-        for idx in top_k_indices:
-            window = self.train_windows[idx]
-            sim_score = similarities[idx]
+        if temporal_filter:
+            # Get more candidates to account for filtering
+            candidate_k = min(top_k * 5, len(similarities))  # Get 5x more candidates
+            candidate_indices = np.argsort(similarities)[-candidate_k:][::-1]
             
-            if return_similarities:
-                results.append((window, sim_score))
-            else:
-                results.append(window)
+            # Apply temporal filtering
+            filtered_results = []
+            used_signatures = set()
+            
+            for idx in candidate_indices:
+                window = self.train_windows[idx]
+                sim_score = similarities[idx]
                 
-        return results
+                # Create temporal signature for filtering
+                item_id = window['item_id']
+                start_idx = window['start_idx']
+                
+                # Check if this window is too close to any already selected window
+                is_too_close = False
+                for used_item, used_start in used_signatures:
+                    if (item_id == used_item and 
+                        abs(start_idx - used_start) < temporal_threshold):
+                        is_too_close = True
+                        break
+                
+                # If not too close, add to results
+                if not is_too_close:
+                    used_signatures.add((item_id, start_idx))
+                    if return_similarities:
+                        filtered_results.append((window, sim_score))
+                    else:
+                        filtered_results.append(window)
+                
+                # Stop when we have enough results
+                if len(filtered_results) >= top_k:
+                    break
+            
+            return filtered_results
+        
+        else:
+            # Original behavior without temporal filtering
+            top_k_indices = np.argsort(similarities)[-top_k:][::-1]  # Descending order
+            
+            # Retrieve corresponding windows and similarities
+            results = []
+            for idx in top_k_indices:
+                window = self.train_windows[idx]
+                sim_score = similarities[idx]
+                
+                if return_similarities:
+                    results.append((window, sim_score))
+                else:
+                    results.append(window)
+                    
+            return results
     
     def batch_retrieve(self, query_embeddings, top_k=5):
         """
@@ -556,7 +599,7 @@ test_query = train_windows[0]['embedding']
 print(f"🔍 Query from window 0: item_id={train_windows[0]['item_id']}, start_idx={train_windows[0]['start_idx']}")
 
 # Retrieve top 5 most similar windows
-similar_windows = retriever.retrieve_similar(test_query, top_k=5, return_similarities=True)
+similar_windows = retriever.retrieve_similar(test_query, top_k=10, return_similarities=True)
 
 print(f"\n📋 Top 5 most similar windows:")
 for i, (window, similarity) in enumerate(similar_windows):
@@ -606,5 +649,205 @@ def visualize_retrieved_windows(query_window, retrieved_results, max_display=5):
 # Visualize the test retrieval
 print(f"\n📈 Visualizing query and retrieved similar windows...")
 visualize_retrieved_windows(train_windows[0], similar_windows, max_display=5)
+
+# %%
+# 🔍 VERIFICATION: Check uniqueness and test with random queries from test set
+print("🔍 VERIFICATION: Testing retrieval system comprehensively...")
+
+# First, let's compute embeddings for some test windows from 'windows'
+def compute_test_embeddings(test_windows, model, batch_size=32):
+    """Compute embeddings for test windows"""
+    test_embeddings = []
+    
+    print(f"Computing embeddings for {len(test_windows)} test windows...")
+    
+    for i in tqdm(range(0, len(test_windows), batch_size), desc="Computing test embeddings"):
+        batch_end = min(i + batch_size, len(test_windows))
+        batch_histories = []
+        
+        for j in range(i, batch_end):
+            history = test_windows[j]['history']
+            history_tensor = torch.FloatTensor(history).unsqueeze(0)
+            batch_histories.append(history_tensor)
+        
+        batch_tensor = torch.stack(batch_histories).to(device)
+        
+        with torch.no_grad():
+            outputs = model(x_enc=batch_tensor)
+            embeddings = outputs.embeddings.cpu().numpy()
+            test_embeddings.extend(embeddings)
+    
+    return np.array(test_embeddings)
+
+# Compute embeddings for a subset of test windows
+n_test_samples = min(50, len(windows))  # Don't compute too many for efficiency
+test_sample_indices = np.random.choice(len(windows), n_test_samples, replace=False)
+test_sample_windows = [windows[i] for i in test_sample_indices]
+
+print(f"\n🎲 Computing embeddings for {n_test_samples} random test windows...")
+test_embeddings = compute_test_embeddings(test_sample_windows, model)
+
+# %%
+# 🧪 Uniqueness verification function
+def verify_retrieval_uniqueness(retriever, test_windows, test_embeddings, n_queries=5):
+    """
+    Verify that retrieved windows are unique and different from query
+    """
+    print(f"\n🔍 UNIQUENESS VERIFICATION with {n_queries} random test queries:")
+    
+    # Select random test queries
+    query_indices = np.random.choice(len(test_windows), n_queries, replace=False)
+    
+    for i, query_idx in enumerate(query_indices):
+        query_window = test_windows[query_idx]
+        query_embedding = test_embeddings[query_idx]
+        
+        print(f"\n📋 Query {i+1}: item_id={query_window['item_id']}, start_idx={query_window['start_idx']}")
+        
+        # Retrieve similar windows
+        similar_results = retriever.retrieve_similar(query_embedding, top_k=5, return_similarities=True)
+        
+        # Check uniqueness
+        retrieved_signatures = []
+        for j, (retrieved_window, similarity) in enumerate(similar_results):
+            signature = f"{retrieved_window['item_id']}_{retrieved_window['start_idx']}"
+            retrieved_signatures.append(signature)
+            
+            print(f"  {j+1}. Sim: {similarity:.4f} | "
+                  f"item_id: {retrieved_window['item_id']} | "
+                  f"start_idx: {retrieved_window['start_idx']}")
+        
+        # Check for duplicates
+        unique_signatures = set(retrieved_signatures)
+        if len(unique_signatures) != len(retrieved_signatures):
+            print(f"  ⚠️  WARNING: Found duplicate retrievals!")
+        else:
+            print(f"  ✅ All retrieved windows are unique")
+        
+        # Check similarity distribution
+        similarities = [sim for _, sim in similar_results]
+        print(f"  📊 Similarity range: {min(similarities):.4f} - {max(similarities):.4f}")
+
+# Run uniqueness verification
+verify_retrieval_uniqueness(retriever, test_sample_windows, test_embeddings, n_queries=5)
+
+# %%
+# 📊 COMPREHENSIVE VISUALIZATION: Multiple queries and their retrievals
+def visualize_multiple_queries_and_retrievals(test_windows, test_embeddings, retriever, n_queries=4, top_k=5):
+    """
+    Visualize multiple test queries and their top-k retrieved training windows
+    Each row shows: [Query] [Retrieved 1] [Retrieved 2] [Retrieved 3] [Retrieved 4] [Retrieved 5]
+    """
+    # Select random queries
+    query_indices = np.random.choice(len(test_windows), n_queries, replace=False)
+    
+    fig, axes = plt.subplots(n_queries, top_k + 1, figsize=(4*(top_k + 1), 4*n_queries))
+    
+    if n_queries == 1:
+        axes = axes.reshape(1, -1)
+    
+    for row, query_idx in enumerate(query_indices):
+        query_window = test_windows[query_idx]
+        query_embedding = test_embeddings[query_idx]
+        
+        # Plot query window (first column)
+        ax_query = axes[row, 0]
+        ax_query.plot(query_window['history'], 'b-', linewidth=2, label='Query History')
+        ax_query.plot(range(144, 144+12), query_window['future'], 'r--', linewidth=2, label='Query Future')
+        ax_query.set_title(f'QUERY {row+1}\nitem_id: {query_window["item_id"]}\nstart_idx: {query_window["start_idx"]}', 
+                          fontsize=10, fontweight='bold')
+        ax_query.set_ylabel('Glucose Level')
+        ax_query.grid(True, alpha=0.3)
+        ax_query.legend(fontsize=8)
+        
+        # Retrieve and plot similar windows
+        similar_results = retriever.retrieve_similar(query_embedding, top_k=top_k, return_similarities=True)
+        
+        for col, (retrieved_window, similarity) in enumerate(similar_results, 1):
+            ax_retrieved = axes[row, col]
+            ax_retrieved.plot(retrieved_window['history'], 'g-', linewidth=2, label='Retrieved History')
+            ax_retrieved.plot(range(144, 144+12), retrieved_window['future'], 'orange', 
+                            linestyle='--', linewidth=2, label='Retrieved Future')
+            ax_retrieved.set_title(f'RETRIEVED {col}\nSim: {similarity:.3f}\nitem_id: {retrieved_window["item_id"]}\nstart_idx: {retrieved_window["start_idx"]}', 
+                                 fontsize=9)
+            ax_retrieved.grid(True, alpha=0.3)
+            
+            if col == 1:  # Only show legend for first retrieved window
+                ax_retrieved.legend(fontsize=8)
+        
+        # Set x-label only for bottom row
+        if row == n_queries - 1:
+            for col in range(top_k + 1):
+                axes[row, col].set_xlabel('Time Steps')
+    
+    plt.suptitle('Test Queries and Retrieved Training Windows (Cosine Similarity)', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+# Create comprehensive visualization
+print(f"\n📊 Creating comprehensive visualization of queries and retrievals...")
+visualize_multiple_queries_and_retrievals(test_sample_windows, test_embeddings, retriever, n_queries=4, top_k=5)
+
+# %%
+# 📈 Statistical analysis of retrieval quality
+def analyze_retrieval_statistics(test_windows, test_embeddings, retriever, n_samples=20):
+    """
+    Analyze statistical properties of the retrieval system
+    """
+    print(f"\n📈 STATISTICAL ANALYSIS of retrieval system:")
+    
+    query_indices = np.random.choice(len(test_windows), n_samples, replace=False)
+    
+    all_similarities = []
+    similarity_distributions = []
+    
+    for query_idx in query_indices:
+        query_embedding = test_embeddings[query_idx]
+        similar_results = retriever.retrieve_similar(query_embedding, top_k=10, return_similarities=True)
+        
+        similarities = [sim for _, sim in similar_results]
+        all_similarities.extend(similarities)
+        similarity_distributions.append(similarities)
+    
+    all_similarities = np.array(all_similarities)
+    
+    print(f"📊 Overall similarity statistics (across {n_samples} queries, top-10 each):")
+    print(f"  • Mean similarity: {all_similarities.mean():.4f}")
+    print(f"  • Std similarity: {all_similarities.std():.4f}")
+    print(f"  • Min similarity: {all_similarities.min():.4f}")
+    print(f"  • Max similarity: {all_similarities.max():.4f}")
+    print(f"  • Median similarity: {np.median(all_similarities):.4f}")
+    
+    # Plot similarity distribution
+    plt.figure(figsize=(12, 4))
+    
+    plt.subplot(1, 2, 1)
+    plt.hist(all_similarities, bins=30, alpha=0.7, edgecolor='black')
+    plt.axvline(all_similarities.mean(), color='red', linestyle='--', label=f'Mean: {all_similarities.mean():.3f}')
+    plt.xlabel('Cosine Similarity')
+    plt.ylabel('Frequency')
+    plt.title('Distribution of Retrieval Similarities')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    plt.subplot(1, 2, 2)
+    similarity_by_rank = np.array(similarity_distributions)
+    mean_by_rank = similarity_by_rank.mean(axis=0)
+    std_by_rank = similarity_by_rank.std(axis=0)
+    
+    ranks = np.arange(1, len(mean_by_rank) + 1)
+    plt.errorbar(ranks, mean_by_rank, yerr=std_by_rank, marker='o', capsize=5)
+    plt.xlabel('Retrieval Rank')
+    plt.ylabel('Mean Cosine Similarity')
+    plt.title('Similarity by Retrieval Rank')
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return all_similarities, similarity_distributions
+
+# Run statistical analysis
+similarity_stats = analyze_retrieval_statistics(test_sample_windows, test_embeddings, retriever, n_samples=20)
 
 # %%
