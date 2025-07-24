@@ -393,3 +393,218 @@ plt.close()
 print(f"GIF saved to: {output_path}")
 
 # %%
+from momentfm import MOMENTPipeline
+
+model = MOMENTPipeline.from_pretrained(
+    "AutonLab/MOMENT-1-large", 
+    model_kwargs={'task_name': 'embedding'}, # We are loading the model in `embedding` mode to learn representations
+    # local_files_only=True,  # Whether or not to only look at local files (i.e., do not try to download the model).
+)
+# %%
+model.init()
+print(model)
+
+# %%
+# Compute MOMENT embeddings for train_windows
+import torch
+import numpy as np
+from tqdm import tqdm
+
+print(f"Computing MOMENT embeddings for {len(train_windows)} train windows...")
+print("Each 'history' has 144 timestamps and will be divided into 18 patches (144/8) for embedding.")
+
+# Convert to torch and process embeddings
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = model.to(device)
+
+# Process in batches for efficiency
+batch_size = 32
+for i in tqdm(range(0, len(train_windows), batch_size), desc="Computing embeddings"):
+    batch_end = min(i + batch_size, len(train_windows))
+    batch_histories = []
+    
+    # Collect histories for this batch
+    for j in range(i, batch_end):
+        history = train_windows[j]['history']
+        # Ensure history is float32 and has shape (1, 144) for univariate time series
+        history_tensor = torch.FloatTensor(history).unsqueeze(0)  # Shape: (1, 144)
+        batch_histories.append(history_tensor)
+    
+    # Stack into batch tensor: (batch_size, 1, 144)
+    batch_tensor = torch.stack(batch_histories).to(device)
+    
+    # Get embeddings from MOMENT
+    with torch.no_grad():
+        outputs = model(x_enc=batch_tensor)
+        embeddings = outputs.embeddings  # Shape: (batch_size, embedding_dim)
+    
+    # Add embeddings back to train_windows
+    for j, embedding in enumerate(embeddings):
+        train_windows[i + j]['embedding'] = embedding.cpu().numpy()
+
+print(f"✅ Successfully computed embeddings!")
+print(f"Each embedding has dimension: {train_windows[0]['embedding'].shape}")
+print(f"Sample train_window keys: {list(train_windows[0].keys())}")
+
+# %%
+# Let's inspect a few examples
+print("\n🔍 Sample train_window structure:")
+for i in range(min(3, len(train_windows))):
+    window = train_windows[i]
+    print(f"\nWindow {i}:")
+    print(f"  - item_id: {window['item_id']}")
+    print(f"  - start_idx: {window['start_idx']}")
+    print(f"  - history shape: {window['history'].shape}")
+    print(f"  - future shape: {window['future'].shape}")
+    print(f"  - embedding shape: {window['embedding'].shape}")
+    print(f"  - embedding mean: {window['embedding'].mean():.4f}")
+    print(f"  - embedding std: {window['embedding'].std():.4f}")
+
+# %%
+# 🔍 Retrieval System using Cosine Similarity
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+
+class MOMENTRetriever:
+    def __init__(self, train_windows):
+        """
+        Initialize the retrieval system with train windows containing embeddings.
+        
+        Args:
+            train_windows: List of dictionaries with 'embedding' key
+        """
+        self.train_windows = train_windows
+        self.train_embeddings = np.stack([w['embedding'] for w in train_windows])
+        print(f"📚 Initialized retriever with {len(train_windows)} train windows")
+        print(f"📊 Embedding matrix shape: {self.train_embeddings.shape}")
+    
+    def retrieve_similar(self, query_embedding, top_k=5, return_similarities=True):
+        """
+        Retrieve top-k most similar train windows for a query embedding.
+        
+        Args:
+            query_embedding: numpy array of shape (embedding_dim,)
+            top_k: number of most similar windows to retrieve
+            return_similarities: whether to return similarity scores
+            
+        Returns:
+            List of tuples: (window_dict, similarity_score) if return_similarities=True
+            List of window_dict if return_similarities=False
+        """
+        # Ensure query_embedding is 2D for sklearn
+        if query_embedding.ndim == 1:
+            query_embedding = query_embedding.reshape(1, -1)
+        
+        # Compute cosine similarities
+        similarities = cosine_similarity(query_embedding, self.train_embeddings)[0]
+        
+        # Get top-k indices
+        top_k_indices = np.argsort(similarities)[-top_k:][::-1]  # Descending order
+        
+        # Retrieve corresponding windows and similarities
+        results = []
+        for idx in top_k_indices:
+            window = self.train_windows[idx]
+            sim_score = similarities[idx]
+            
+            if return_similarities:
+                results.append((window, sim_score))
+            else:
+                results.append(window)
+                
+        return results
+    
+    def batch_retrieve(self, query_embeddings, top_k=5):
+        """
+        Batch retrieval for multiple query embeddings.
+        
+        Args:
+            query_embeddings: numpy array of shape (n_queries, embedding_dim)
+            top_k: number of most similar windows to retrieve for each query
+            
+        Returns:
+            List of lists: each inner list contains top-k results for one query
+        """
+        # Compute all similarities at once
+        similarities = cosine_similarity(query_embeddings, self.train_embeddings)
+        
+        batch_results = []
+        for i, query_similarities in enumerate(similarities):
+            # Get top-k indices for this query
+            top_k_indices = np.argsort(query_similarities)[-top_k:][::-1]
+            
+            # Retrieve corresponding windows and similarities
+            query_results = []
+            for idx in top_k_indices:
+                window = self.train_windows[idx]
+                sim_score = query_similarities[idx]
+                query_results.append((window, sim_score))
+                
+            batch_results.append(query_results)
+            
+        return batch_results
+
+# Initialize the retriever
+retriever = MOMENTRetriever(train_windows)
+
+# %%
+# 🧪 Test the retrieval system with a sample query
+print("\n🧪 Testing retrieval system...")
+
+# Use the first train window as a query to test (should be most similar to itself)
+test_query = train_windows[0]['embedding']
+print(f"🔍 Query from window 0: item_id={train_windows[0]['item_id']}, start_idx={train_windows[0]['start_idx']}")
+
+# Retrieve top 5 most similar windows
+similar_windows = retriever.retrieve_similar(test_query, top_k=5, return_similarities=True)
+
+print(f"\n📋 Top 5 most similar windows:")
+for i, (window, similarity) in enumerate(similar_windows):
+    print(f"  {i+1}. Similarity: {similarity:.4f} | "
+          f"item_id: {window['item_id']} | "
+          f"start_idx: {window['start_idx']}")
+
+# %%
+# 📊 Visualization of Retrieved Similar Windows
+import matplotlib.pyplot as plt
+
+def visualize_retrieved_windows(query_window, retrieved_results, max_display=5):
+    """
+    Visualize the query window and its most similar retrieved windows.
+    """
+    n_display = min(len(retrieved_results), max_display)
+    fig, axes = plt.subplots(2, n_display, figsize=(4*n_display, 8))
+    
+    if n_display == 1:
+        axes = axes.reshape(2, 1)
+    
+    # Plot query window
+    for i in range(n_display):
+        # Query history (top row)
+        axes[0, i].plot(query_window['history'], 'b-', linewidth=2, label='Query History')
+        axes[0, i].plot(range(144, 144+12), query_window['future'], 'r--', linewidth=2, label='Query Future')
+        axes[0, i].set_title(f'Query Window\nitem_id: {query_window["item_id"]}', fontsize=10)
+        axes[0, i].set_ylabel('Glucose Level')
+        axes[0, i].grid(True, alpha=0.3)
+        if i == 0:
+            axes[0, i].legend()
+        
+        # Retrieved window (bottom row)
+        retrieved_window, similarity = retrieved_results[i]
+        axes[1, i].plot(retrieved_window['history'], 'g-', linewidth=2, label='Retrieved History')
+        axes[1, i].plot(range(144, 144+12), retrieved_window['future'], 'orange', linestyle='--', linewidth=2, label='Retrieved Future')
+        axes[1, i].set_title(f'Similar Window {i+1}\nSim: {similarity:.3f}\nitem_id: {retrieved_window["item_id"]}', fontsize=10)
+        axes[1, i].set_ylabel('Glucose Level')
+        axes[1, i].set_xlabel('Time Steps')
+        axes[1, i].grid(True, alpha=0.3)
+        if i == 0:
+            axes[1, i].legend()
+    
+    plt.tight_layout()
+    plt.show()
+
+# Visualize the test retrieval
+print(f"\n📈 Visualizing query and retrieved similar windows...")
+visualize_retrieved_windows(train_windows[0], similar_windows, max_display=5)
+
+# %%
