@@ -858,6 +858,396 @@ def analyze_retrieval_statistics(test_windows, test_embeddings, retriever, n_sam
 # Run statistical analysis
 similarity_stats = analyze_retrieval_statistics(test_sample_windows, test_embeddings, retriever, n_samples=20)
 
+# %%
+# 🎯 NEW VISUALIZATION: Test Windows and Their Top-5 Training Retrievals
+import matplotlib.pyplot as plt
+import numpy as np
 
+def visualize_test_queries_with_training_retrievals(test_windows, test_embeddings, retriever, n_queries=3, top_k=5):
+    """
+    Visualize random test windows and their top-k retrieved training windows.
+    
+    Args:
+        test_windows: List of test window dictionaries
+        test_embeddings: Array of test embeddings  
+        retriever: MOMENTRetriever instance
+        n_queries: Number of random test queries to show
+        top_k: Number of training retrievals to show per query
+    """
+    # Select random test queries
+    query_indices = np.random.choice(len(test_windows), n_queries, replace=False)
+    
+    # Create subplot grid: n_queries rows, (1 + top_k) columns
+    fig, axes = plt.subplots(n_queries, 1 + top_k, figsize=(4*(1 + top_k), 4*n_queries))
+    
+    # Handle single query case
+    if n_queries == 1:
+        axes = axes.reshape(1, -1)
+    
+    for row, query_idx in enumerate(query_indices):
+        # Get test query data
+        test_window = test_windows[query_idx]
+        test_embedding = test_embeddings[query_idx]
+        
+        # Retrieve top-k similar training windows
+        similar_results = retriever.retrieve_similar(
+            test_embedding, top_k=top_k, return_similarities=True, 
+            temporal_filter=True, temporal_threshold=20
+        )
+        
+        # Plot test query (first column)
+        ax_query = axes[row, 0]
+        ax_query.plot(test_window['history'], 'blue', linewidth=2.5, label='Test History')
+        ax_query.plot(range(144, 144+12), test_window['future'], 'red', 
+                     linestyle='--', linewidth=2.5, label='Test Future')
+        ax_query.set_title(f'TEST QUERY {row+1}\nitem_id: {test_window["item_id"]}\nstart_idx: {test_window["start_idx"]}', 
+                          fontsize=11, fontweight='bold', color='darkblue')
+        ax_query.set_ylabel('Glucose Level', fontsize=10)
+        ax_query.grid(True, alpha=0.3)
+        ax_query.legend(fontsize=9)
+        
+        # Add colored border for test query
+        for spine in ax_query.spines.values():
+            spine.set_edgecolor('darkblue')
+            spine.set_linewidth(2)
+        
+        # Plot retrieved training windows (remaining columns)
+        for col, (train_window, similarity) in enumerate(similar_results, 1):
+            ax_train = axes[row, col]
+            
+            # Use different colors for different similarity ranges
+            if similarity > 0.8:
+                color_hist, color_fut = 'darkgreen', 'green'
+                border_color = 'darkgreen'
+            elif similarity > 0.6:
+                color_hist, color_fut = 'orange', 'darkorange' 
+                border_color = 'orange'
+            else:
+                color_hist, color_fut = 'purple', 'mediumpurple'
+                border_color = 'purple'
+            
+            ax_train.plot(train_window['history'], color_hist, linewidth=2, label='Train History')
+            ax_train.plot(range(144, 144+12), train_window['future'], color_fut,
+                         linestyle='--', linewidth=2, label='Train Future')
+            ax_train.set_title(f'RANK {col}\nSim: {similarity:.3f}\nitem_id: {train_window["item_id"]}\nstart_idx: {train_window["start_idx"]}', 
+                              fontsize=10, color=border_color)
+            ax_train.grid(True, alpha=0.3)
+            
+            # Add colored border based on similarity
+            for spine in ax_train.spines.values():
+                spine.set_edgecolor(border_color)
+                spine.set_linewidth(1.5)
+            
+            # Add legend only for first retrieved window
+            if col == 1:
+                ax_train.legend(fontsize=9)
+        
+        # Set x-labels for bottom row only
+        if row == n_queries - 1:
+            for col in range(1 + top_k):
+                axes[row, col].set_xlabel('Time Steps', fontsize=10)
+    
+    # Set overall title and layout
+    plt.suptitle(f'Test Queries and Top-{top_k} Retrieved Training Windows\n(Colors: Green=High Sim, Orange=Med Sim, Purple=Low Sim)', 
+                 fontsize=14, fontweight='bold', y=0.98)
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.92)
+    plt.show()
+    
+    # Print summary statistics
+    print(f"\n📊 RETRIEVAL SUMMARY:")
+    print(f"🔍 DATA STRUCTURE: Intra-patient retrieval from continuous glucose monitoring")
+    print(f"   • Test and train windows are different rolling windows from SAME patient's time series")
+    print(f"   • High similarities (0.95+) are EXPECTED - overlapping/nearby glucose patterns")
+    print(f"   • This demonstrates finding similar glucose dynamics within patient history")
+    print()
+    
+    for i, query_idx in enumerate(query_indices):
+        test_window = test_windows[query_idx]
+        test_embedding = test_embeddings[query_idx]
+        similar_results = retriever.retrieve_similar(
+            test_embedding, top_k=top_k, return_similarities=True,
+            temporal_filter=True, temporal_threshold=20
+        )
+        
+        similarities = [sim for _, sim in similar_results]
+        retrieved_items = [w['item_id'] for w, _ in similar_results]
+        retrieved_starts = [w['start_idx'] for w, _ in similar_results]
+        
+        print(f"  Query {i+1} (item_id: {test_window['item_id']}, start_idx: {test_window['start_idx']}):")
+        print(f"    • Similarities: {[f'{s:.3f}' for s in similarities]}")
+        print(f"    • Retrieved start_indices: {retrieved_starts}")
+        print(f"    • Temporal gaps from query: {[abs(test_window['start_idx'] - s) for s in retrieved_starts]}")
+        print(f"    • Unique items retrieved: {len(set(retrieved_items))}/{top_k}")
+
+def visualize_full_timeline_with_chunks(test_windows, test_embeddings, retriever, train_windows, n_queries=3, top_k=5):
+    """
+    Visualize full continuous glucose time series with highlighted query and retrieved chunks.
+    """
+    # Reconstruct the full continuous time series
+    patient_id = train_windows[0]['item_id']
+    
+    # Get all windows sorted by start_idx
+    train_patient_windows = [(w['start_idx'], w) for w in train_windows if w['item_id'] == patient_id]
+    test_patient_windows = [(w['start_idx'], w) for w in test_windows if w['item_id'] == patient_id]
+    all_windows = train_patient_windows + test_patient_windows
+    all_windows.sort(key=lambda x: x[0])
+    
+    # Find series range
+    min_start = min(start for start, _ in all_windows)
+    max_start = max(start for start, _ in all_windows)
+    series_length = max_start + 156  # 144 + 12 for future
+    
+    # Reconstruct continuous series using overlapping windows
+    full_series = np.full(series_length, np.nan)
+    for start_idx, window in all_windows:
+        # Fill history
+        end_hist = start_idx + 144
+        if 0 <= start_idx < series_length and end_hist <= series_length:
+            full_series[start_idx:end_hist] = window['history']
+        # Fill future
+        start_fut = start_idx + 144
+        end_fut = start_fut + 12
+        if 0 <= start_fut < series_length and end_fut <= series_length:
+            full_series[start_fut:end_fut] = window['future']
+    
+    # Select random test queries
+    query_indices = np.random.choice(len(test_windows), n_queries, replace=False)
+    
+    # Create plots
+    fig, axes = plt.subplots(n_queries, 1, figsize=(20, 4*n_queries))
+    if n_queries == 1:
+        axes = [axes]
+    
+    colors = ['red', 'green', 'orange', 'purple', 'brown']
+    
+    for row, query_idx in enumerate(query_indices):
+        ax = axes[row]
+        test_window = test_windows[query_idx]
+        test_embedding = test_embeddings[query_idx]
+        query_start = test_window['start_idx']
+        
+        # Get retrieved windows
+        similar_results = retriever.retrieve_similar(
+            test_embedding, top_k=top_k, return_similarities=True, 
+            temporal_filter=True, temporal_threshold=20
+        )
+        
+        # Plot full series
+        time_axis = np.arange(len(full_series))
+        ax.plot(time_axis, full_series, 'lightgray', linewidth=1, alpha=0.7, label='Full Glucose Series')
+        
+        # Highlight query window
+        query_end = query_start + 144
+        query_mask = (time_axis >= query_start) & (time_axis < query_end)
+        ax.plot(time_axis[query_mask], full_series[query_mask], 'blue', linewidth=4, 
+               label=f'QUERY (start: {query_start})')
+        ax.axvspan(query_start, query_end, alpha=0.3, color='blue')
+        ax.axvline(query_start, color='blue', linestyle='--', linewidth=2)
+        ax.axvline(query_end, color='blue', linestyle='--', linewidth=2)
+        
+        # Highlight retrieved windows
+        for i, (retrieved_window, similarity) in enumerate(similar_results):
+            color = colors[i % len(colors)]
+            retr_start = retrieved_window['start_idx']
+            retr_end = retr_start + 144
+            
+            retr_mask = (time_axis >= retr_start) & (time_axis < retr_end)
+            ax.plot(time_axis[retr_mask], full_series[retr_mask], color, linewidth=3, 
+                   label=f'RANK {i+1} (sim: {similarity:.3f}, start: {retr_start})')
+            ax.axvspan(retr_start, retr_end, alpha=0.2, color=color)
+            ax.axvline(retr_start, color=color, linestyle=':', linewidth=1.5)
+            ax.axvline(retr_end, color=color, linestyle=':', linewidth=1.5)
+        
+        # Formatting
+        ax.set_title(f'Query {row+1}: Full Glucose Timeline - Patient {patient_id}\n'
+                    f'Query at timestep {query_start} with {top_k} similar chunks highlighted', 
+                    fontsize=12, fontweight='bold')
+        ax.set_xlabel('Time Steps (Continuous Glucose Monitoring)', fontsize=11)
+        ax.set_ylabel('Glucose Level', fontsize=11)
+        ax.grid(True, alpha=0.3)
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=9)
+        
+        # Focus on relevant region
+        focus_start = max(0, query_start - 300)
+        focus_end = min(len(full_series), query_start + 500)
+        ax.set_xlim(focus_start, focus_end)
+    
+    plt.tight_layout()
+    plt.show()
+
+# Create the new timeline visualization
+print("🎯 Creating Full Timeline Visualization with Highlighted Chunks...")
+print("   📝 Shows complete glucose time series with query and retrieved chunks highlighted")
+visualize_full_timeline_with_chunks(
+    test_sample_windows, test_embeddings, retriever, train_windows, n_queries=3, top_k=5
+)
+
+# Create the original visualization  
+print("\n🎯 Creating Test Queries with Training Retrievals Visualization...")
+print("   📝 Note: This shows intra-patient glucose pattern retrieval")
+print("   📝 Test and train are rolling windows from the same continuous glucose time series")
+visualize_test_queries_with_training_retrievals(
+    test_sample_windows, test_embeddings, retriever, n_queries=3, top_k=5
+)
+
+# %%
+# 📅 NEW TIMESTAMP-BASED VISUALIZATION: Real dates with train/test split and retrievals
+def visualize_timestamp_based_retrieval(test_windows, test_embeddings, retriever, train_tsdf, test_tsdf, n_queries=3, top_k=5):
+    """
+    Visualize glucose time series with real timestamps, showing train/test split and highlighted retrieval results.
+    
+    Args:
+        test_windows: List of test window dictionaries
+        test_embeddings: Array of test embeddings
+        retriever: MOMENTRetriever instance
+        train_tsdf: Training time series dataframe with timestamps
+        test_tsdf: Test time series dataframe with timestamps  
+        n_queries: Number of random test queries to show
+        top_k: Number of training retrievals to highlight
+    """
+    import random
+    import matplotlib.dates as mdates
+    
+    # Get the patient data
+    item_id = '563'
+    train_series = train_tsdf.loc[item_id].reset_index()
+    test_series = test_tsdf.loc[item_id].reset_index()
+    
+    # Select random test queries
+    query_indices = np.random.choice(len(test_windows), n_queries, replace=False)
+    
+    # Create subplot grid
+    fig, axes = plt.subplots(n_queries, 1, figsize=(24, 6*n_queries))
+    if n_queries == 1:
+        axes = [axes]
+    
+    colors = ['red', 'orange', 'green', 'purple', 'brown']
+    
+    for row, query_idx in enumerate(query_indices):
+        ax = axes[row]
+        
+        # Get test query data
+        test_window = test_windows[query_idx]
+        test_embedding = test_embeddings[query_idx]
+        query_start_idx = test_window['start_idx']
+        
+        # Plot train and test data with timestamps
+        ax.plot(train_series['timestamp'], train_series['target'], 'b-', linewidth=1.5, label='Train Data')
+        ax.plot(test_series['timestamp'], test_series['target'], 'gray', linewidth=1.5, label='Test Data')
+        
+        # Add vertical line at train/test split
+        split_point = train_series['timestamp'].iloc[-1]
+        ax.axvline(x=split_point, color='black', linestyle='--', linewidth=2, label='Train/Test Split')
+        
+        # Highlight the test query window
+        context_start = query_start_idx
+        context_end = context_start + 144
+        horizon_end = context_end + 12
+        
+        # Get corresponding timestamps for the query
+        context_timestamps = test_series['timestamp'].iloc[context_start:context_end]
+        horizon_timestamps = test_series['timestamp'].iloc[context_end:horizon_end]
+        
+        # Plot query context and horizon
+        ax.plot(context_timestamps, test_series['target'].iloc[context_start:context_end], 
+                'blue', linewidth=4, label=f'TEST QUERY (start_idx: {query_start_idx})')
+        ax.plot(horizon_timestamps, test_series['target'].iloc[context_end:horizon_end], 
+                'darkblue', linewidth=4, linestyle='--', label='Query Horizon (12 points)')
+        
+        # Add shading for query window
+        if len(context_timestamps) > 1:
+            ax.axvspan(context_timestamps.iloc[0], context_timestamps.iloc[-1], 
+                      alpha=0.3, color='blue', edgecolor=None)
+        if len(horizon_timestamps) > 1:
+            ax.axvspan(horizon_timestamps.iloc[0], horizon_timestamps.iloc[-1], 
+                      alpha=0.2, color='darkblue', edgecolor=None)
+        
+        # Retrieve similar training windows
+        similar_results = retriever.retrieve_similar(
+            test_embedding, top_k=top_k, return_similarities=True,
+            temporal_filter=True, temporal_threshold=20
+        )
+        
+        # Highlight each retrieved training window
+        for i, (retrieved_window, similarity) in enumerate(similar_results):
+            color = colors[i % len(colors)]
+            retr_start_idx = retrieved_window['start_idx']
+            retr_context_end = retr_start_idx + 144
+            retr_horizon_end = retr_context_end + 12
+            
+            # Get corresponding timestamps in training data
+            if retr_start_idx < len(train_series) and retr_context_end <= len(train_series):
+                retr_context_timestamps = train_series['timestamp'].iloc[retr_start_idx:retr_context_end]
+                retr_context_values = train_series['target'].iloc[retr_start_idx:retr_context_end]
+                
+                # Plot retrieved context window
+                ax.plot(retr_context_timestamps, retr_context_values, color, linewidth=3, 
+                       label=f'RANK {i+1} (sim: {similarity:.3f}, start: {retr_start_idx})')
+                
+                # Add shading for retrieved window
+                if len(retr_context_timestamps) > 1:
+                    ax.axvspan(retr_context_timestamps.iloc[0], retr_context_timestamps.iloc[-1], 
+                              alpha=0.15, color=color, edgecolor=None)
+                
+                # Add vertical lines at boundaries
+                ax.axvline(retr_context_timestamps.iloc[0], color=color, linestyle=':', linewidth=1.5, alpha=0.8)
+                ax.axvline(retr_context_timestamps.iloc[-1], color=color, linestyle=':', linewidth=1.5, alpha=0.8)
+        
+        # Format the x-axis to show dates properly
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=2))
+        ax.tick_params(axis='x', rotation=45)
+        
+        # Formatting
+        ax.set_title(f'Query {row+1}: Glucose Time Series with Retrieval Results\n'
+                    f'Patient #{item_id} - Test Query at start_idx {query_start_idx} + Top {top_k} Retrieved Training Windows', 
+                    fontsize=13, fontweight='bold')
+        ax.set_xlabel('Date', fontsize=12)
+        ax.set_ylabel('Glucose Level', fontsize=12)
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        
+        # Set reasonable time range to focus on relevant period
+        query_timestamp = test_series['timestamp'].iloc[query_start_idx]
+        focus_start = query_timestamp - pd.Timedelta(days=3)
+        focus_end = query_timestamp + pd.Timedelta(days=2)
+        ax.set_xlim(focus_start, focus_end)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary with timestamps
+    print(f"\n📊 TIMESTAMP-BASED RETRIEVAL SUMMARY:")
+    print(f"🔍 Real-time glucose monitoring with date/time context")
+    print()
+    
+    for i, query_idx in enumerate(query_indices):
+        test_window = test_windows[query_idx]
+        test_embedding = test_embeddings[query_idx]
+        query_start_idx = test_window['start_idx']
+        query_timestamp = test_series['timestamp'].iloc[query_start_idx]
+        
+        similar_results = retriever.retrieve_similar(
+            test_embedding, top_k=top_k, return_similarities=True,
+            temporal_filter=True, temporal_threshold=20
+        )
+        
+        print(f"  Query {i+1}: Test window at {query_timestamp.strftime('%Y-%m-%d %H:%M')} (start_idx: {query_start_idx})")
+        
+        for j, (retrieved_window, similarity) in enumerate(similar_results):
+            retr_start_idx = retrieved_window['start_idx']
+            if retr_start_idx < len(train_series):
+                retr_timestamp = train_series['timestamp'].iloc[retr_start_idx]
+                time_diff = query_timestamp - retr_timestamp
+                print(f"    Rank {j+1}: {retr_timestamp.strftime('%Y-%m-%d %H:%M')} "
+                      f"(sim: {similarity:.3f}, {time_diff.days} days before query)")
+
+# Create the timestamp-based visualization
+print("📅 Creating Timestamp-Based Retrieval Visualization...")
+print("   📝 Shows real dates/times with train/test split and highlighted retrievals")
+visualize_timestamp_based_retrieval(
+    test_sample_windows, test_embeddings, retriever, train_tsdf, test_tsdf, n_queries=3, top_k=5
+)
 
 # %%
